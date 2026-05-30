@@ -3,52 +3,76 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>建設FAX Excel AI 試作</title>
+    <title>建設FAX Excel AI</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <main class="app">
+      <header class="topbar">
+        <div class="brand">
+          <span class="mark">FX</span>
+          <div>
+            <h1>建設FAX Excel AI</h1>
+            <p>FAX・PDF・写真を読み取り、Excel入力用の項目に整理します</p>
+          </div>
+        </div>
+        <div class="status-pill" id="status">ファイルを読み込むか、サンプルで試せます</div>
+      </header>
+
+      <section class="workflow" aria-label="処理の流れ">
+        <div class="step active"><span>1</span> 読み込み</div>
+        <div class="step"><span>2</span> 抽出</div>
+        <div class="step"><span>3</span> 確認</div>
+        <div class="step"><span>4</span> Excel出力</div>
+      </section>
+
       <section class="workspace">
         <aside class="input-pane">
-          <div class="brand">
-            <span class="mark">FX</span>
-            <div>
-              <h1>建設FAX Excel AI</h1>
-              <p>資材発注・見積依頼をExcel入力欄へ自動整理</p>
-            </div>
+          <div class="section-heading">
+            <h2>原本データ</h2>
+            <p>PDF、写真、OCR済みテキストを取り込めます</p>
           </div>
 
           <label class="drop-zone" for="fileInput">
             <input id="fileInput" type="file" accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff,.webp,.txt,.csv,.log" />
-            <span>写真・PDF・OCR済みテキストを読み込み</span>
+            <strong>ファイルを選択</strong>
+            <span>PDF・写真・画像・テキスト</span>
           </label>
 
-          <div class="actions">
+          <div class="action-grid">
             <button id="sampleBtn" type="button">サンプル読込</button>
-            <button id="extractBtn" type="button" class="primary">抽出</button>
+            <button id="extractBtn" type="button" class="primary">抽出する</button>
           </div>
-          <button id="autoRunBtn" type="button">受信FAXフォルダを処理</button>
 
-          <textarea id="faxText" spellcheck="false" placeholder="FAXのOCR結果、または受信内容を貼り付け"></textarea>
+          <button id="autoRunBtn" type="button" class="secondary">受信FAXフォルダを処理</button>
+
+          <textarea id="faxText" spellcheck="false" placeholder="FAXのOCR結果、PDFから読み取った文章、または受信内容を貼り付けます"></textarea>
         </aside>
 
         <section class="result-pane">
           <div class="toolbar">
-            <div>
-              <h2>確認結果</h2>
-              <p id="status">テキストを入れて抽出してください</p>
+            <div class="section-heading">
+              <h2>確認・修正</h2>
+              <p>読み取り結果を確認して、必要な箇所だけ修正できます</p>
             </div>
             <button id="exportBtn" type="button" disabled>Excel出力</button>
           </div>
 
           <div class="summary-grid" id="headerFields"></div>
 
+          <div class="table-header">
+            <div>
+              <h3>資材明細</h3>
+              <p>数量、単価、金額はExcel出力前に確認してください</p>
+            </div>
+          </div>
+
           <div class="table-wrap">
             <table>
               <thead>
                 <tr>
                   <th>品番</th>
-                  <th>商品名</th>
+                  <th>商品名・資材名</th>
                   <th>数量</th>
                   <th>単位</th>
                   <th>単価</th>
