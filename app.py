@@ -23,6 +23,8 @@ PUBLIC = ROOT / "public"
 OUTPUTS = ROOT / "outputs"
 INCOMING = ROOT / "incoming_fax"
 PROCESSED = ROOT / "processed_fax"
+PC_EXCEL_DIR = ROOT / "pc_excel"
+LEDGER_PATH = Path(os.environ.get("LEDGER_PATH", PC_EXCEL_DIR / "fax_ledger.xlsx"))
 
 
 FIELD_LABELS = {
@@ -48,6 +50,16 @@ ITEM_LABELS = {
     "unit": "単位",
     "unit_price": "単価",
     "amount": "金額",
+}
+
+LEDGER_COLUMNS = {
+    "review_status": "確認状況",
+    "reviewer": "確認者",
+    "reviewed_at": "確認日時",
+    "processed_at": "入力日時",
+    "source_name": "元ファイル",
+    **FIELD_LABELS,
+    **ITEM_LABELS,
 }
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
@@ -342,6 +354,87 @@ def create_workbook(payload):
     return output_path
 
 
+def ensure_ledger_workbook():
+    LEDGER_PATH.parent.mkdir(exist_ok=True)
+    if LEDGER_PATH.exists():
+        from openpyxl import load_workbook
+
+        wb = load_workbook(LEDGER_PATH)
+        ws = wb["FAX台帳"] if "FAX台帳" in wb.sheetnames else wb.active
+        existing_headers = [ws.cell(row=1, column=col).value for col in range(1, ws.max_column + 1)]
+        missing_labels = [label for label in LEDGER_COLUMNS.values() if label not in existing_headers]
+        if missing_labels:
+            start_col = ws.max_column + 1
+            header_fill = PatternFill("solid", fgColor="D9EAF7")
+            for offset, label in enumerate(missing_labels):
+                cell = ws.cell(row=1, column=start_col + offset, value=label)
+                cell.fill = header_fill
+                cell.font = Font(bold=True)
+                ws.column_dimensions[get_column_letter(start_col + offset)].width = 18
+            wb.save(LEDGER_PATH)
+        return
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "FAX台帳"
+    header_fill = PatternFill("solid", fgColor="D9EAF7")
+    thin = Side(style="thin", color="B7C9D6")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    for col, label in enumerate(LEDGER_COLUMNS.values(), start=1):
+        cell = ws.cell(row=1, column=col, value=label)
+        cell.fill = header_fill
+        cell.font = Font(bold=True)
+        cell.border = border
+        cell.alignment = Alignment(vertical="center", wrap_text=True)
+        ws.column_dimensions[get_column_letter(col)].width = 18 if col != 2 else 26
+    ws.freeze_panes = "A2"
+    wb.save(LEDGER_PATH)
+
+
+def append_to_pc_excel(payload):
+    ensure_ledger_workbook()
+    wb = Workbook()
+    try:
+        from openpyxl import load_workbook
+
+        wb = load_workbook(LEDGER_PATH)
+    except PermissionError as exc:
+        raise PermissionError("Excel台帳が開かれています。閉じてからもう一度実行してください。") from exc
+
+    ws = wb["FAX台帳"] if "FAX台帳" in wb.sheetnames else wb.active
+    header_to_col = {ws.cell(row=1, column=col).value: col for col in range(1, ws.max_column + 1)}
+    header = payload.get("header", {})
+    items = payload.get("items") or [{}]
+    processed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    rows_added = 0
+
+    for item in items:
+        row_data = {
+            "review_status": "社員確認待ち",
+            "reviewer": "",
+            "reviewed_at": "",
+            "processed_at": processed_at,
+            "source_name": payload.get("source_name", ""),
+            **header,
+            **item,
+        }
+        row = ws.max_row + 1
+        for key, label in LEDGER_COLUMNS.items():
+            col = header_to_col.get(label)
+            if not col:
+                col = ws.max_column + 1
+                ws.cell(row=1, column=col, value=label)
+                header_to_col[label] = col
+            ws.cell(row=row, column=col, value=row_data.get(key, ""))
+        rows_added += 1
+
+    try:
+        wb.save(LEDGER_PATH)
+    except PermissionError as exc:
+        raise PermissionError("Excel台帳が開かれています。閉じてからもう一度実行してください。") from exc
+    return {"path": str(LEDGER_PATH), "rows_added": rows_added}
+
+
 def process_incoming_once():
     INCOMING.mkdir(exist_ok=True)
     PROCESSED.mkdir(exist_ok=True)
@@ -354,11 +447,22 @@ def process_incoming_once():
         data = extract_fax(text)
         data["source_name"] = path.stem
         output = create_workbook(data)
+        ledger = append_to_pc_excel(data)
         target = PROCESSED / path.name
         if target.exists():
             target = PROCESSED / f"{path.stem}_{datetime.now().strftime('%H%M%S')}{path.suffix}"
         path.replace(target)
-        results.append({"source": path.name, "status": "created", "file": output.name, "download_url": f"/download/{output.name}", "warning": warning})
+        results.append(
+            {
+                "source": path.name,
+                "status": "created",
+                "file": output.name,
+                "download_url": f"/download/{output.name}",
+                "ledger_path": ledger["path"],
+                "rows_added": ledger["rows_added"],
+                "warning": warning,
+            }
+        )
     return results
 
 
@@ -433,6 +537,15 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"file": output_path.name, "download_url": f"/download/{output_path.name}"})
             return
 
+        if self.path == "/api/append-ledger":
+            try:
+                result = append_to_pc_excel(data)
+            except PermissionError as exc:
+                self.send_json({"error": str(exc)}, 409)
+                return
+            self.send_json(result)
+            return
+
         self.send_error(404)
 
     def send_download(self, filename):
@@ -455,6 +568,7 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     INCOMING.mkdir(exist_ok=True)
     OUTPUTS.mkdir(exist_ok=True)
+    PC_EXCEL_DIR.mkdir(exist_ok=True)
     port = int(os.environ.get("PORT") or (sys.argv[1] if len(sys.argv) > 1 else 8765))
     host = os.environ.get("HOST", "0.0.0.0")
     server = ThreadingHTTPServer((host, port), Handler)

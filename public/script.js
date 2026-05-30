@@ -49,6 +49,7 @@ const headerFields = document.querySelector("#headerFields");
 const itemRows = document.querySelector("#itemRows");
 const status = document.querySelector("#status");
 const exportBtn = document.querySelector("#exportBtn");
+const appendBtn = document.querySelector("#appendBtn");
 const download = document.querySelector("#download");
 
 function setStatus(text, type = "neutral") {
@@ -114,6 +115,7 @@ async function extract() {
   renderHeader();
   renderItems();
   exportBtn.disabled = false;
+  appendBtn.disabled = false;
   setStatus("読み取りました。右側を確認してください", "success");
 }
 
@@ -127,6 +129,22 @@ async function exportExcel() {
   const result = await response.json();
   download.innerHTML = `<a href="${result.download_url}">${result.file}</a> を保存できます`;
   setStatus("Excelファイルができました", "success");
+}
+
+async function appendLedger() {
+  setStatus("PCのExcel台帳に入力しています...", "busy");
+  const response = await fetch("/api/append-ledger", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(current),
+  });
+  const result = await response.json();
+  if (!response.ok || result.error) {
+    setStatus(result.error || "PCのExcel台帳に入力できませんでした", "warning");
+    return;
+  }
+  download.innerHTML = `${result.rows_added}行をPCのExcel台帳に「社員確認待ち」で入力しました<br>${result.path}`;
+  setStatus("社員確認待ちとしてPCのExcel台帳に入力しました", "success");
 }
 
 async function autoRun() {
@@ -162,6 +180,7 @@ document.querySelector("#sampleBtn").addEventListener("click", () => {
 });
 
 document.querySelector("#extractBtn").addEventListener("click", extract);
+appendBtn.addEventListener("click", appendLedger);
 exportBtn.addEventListener("click", exportExcel);
 document.querySelector("#autoRunBtn").addEventListener("click", autoRun);
 

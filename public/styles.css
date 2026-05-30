@@ -312,6 +312,12 @@ textarea {
   margin-bottom: 14px;
 }
 
+.toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .summary-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(220px, 1fr));
