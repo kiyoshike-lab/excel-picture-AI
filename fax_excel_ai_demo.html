@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FAX Excel AI 試作</title>
+    <style>
+      :root {
+        --ink: #17212b;
+        --muted: #657487;
+        --line: #d7e0e8;
+        --page: #eef4f7;
+        --panel: #fff;
+        --accent: #146c73;
+        --accent-dark: #0d4f55;
+        --warn: #b06b00;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "Yu Gothic UI", "Meiryo", system-ui, sans-serif;
+        background: var(--page);
+        color: var(--ink);
+      }
+      button, input, textarea { font: inherit; }
+      .app { min-height: 100vh; padding: 24px; }
+      .workspace {
+        display: grid;
+        grid-template-columns: minmax(320px, 0.9fr) minmax(520px, 1.3fr);
+        gap: 18px;
+        max-width: 1320px;
+        margin: 0 auto;
+      }
+      .input-pane, .result-pane {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        min-height: calc(100vh - 48px);
+      }
+      .input-pane {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        padding: 18px;
+      }
+      .brand { display: flex; align-items: center; gap: 12px; }
+      .mark {
+        display: grid;
+        place-items: center;
+        width: 44px;
+        height: 44px;
+        border-radius: 8px;
+        background: var(--accent);
+        color: white;
+        font-weight: 800;
+      }
+      h1, h2, p { margin: 0; }
+      h1 { font-size: 22px; line-height: 1.2; }
+      h2 { font-size: 20px; }
+      p, #status { color: var(--muted); font-size: 13px; }
+      .drop-zone {
+        display: block;
+        border: 1px dashed #8eacba;
+        border-radius: 8px;
+        padding: 14px;
+        text-align: center;
+        color: var(--accent-dark);
+        background: #f7fbfc;
+        cursor: pointer;
+      }
+      .drop-zone input { display: none; }
+      .actions, .toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      button {
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: #f9fbfc;
+        color: var(--ink);
+        padding: 10px 14px;
+        cursor: pointer;
+        min-height: 40px;
+      }
+      button.primary, #exportBtn {
+        background: var(--accent);
+        color: #fff;
+        border-color: var(--accent);
+      }
+      button:disabled { cursor: not-allowed; opacity: 0.48; }
+      textarea {
+        width: 100%;
+        flex: 1;
+        min-height: 420px;
+        resize: none;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 14px;
+        line-height: 1.6;
+      }
+      .result-pane { padding: 18px; overflow: auto; }
+      .toolbar { margin-bottom: 18px; }
+      .summary-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(220px, 1fr));
+        gap: 10px;
+        margin-bottom: 18px;
+      }
+      .field {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 10px;
+        background: #fbfdfe;
+      }
+      .field label {
+        display: block;
+        color: var(--muted);
+        font-size: 12px;
+        margin-bottom: 6px;
+      }
+      .field input {
+        width: 100%;
+        border: 0;
+        border-bottom: 1px solid transparent;
+        background: transparent;
+        padding: 4px 0;
+      }
+      .field.low { border-color: #e3b55f; background: #fff9eb; }
+      .field.low label::after { content: " 確認"; color: var(--warn); }
+      .table-wrap {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        overflow: auto;
+      }
+      table { width: 100%; min-width: 760px; border-collapse: collapse; }
+      th, td { border-bottom: 1px solid var(--line); padding: 8px; text-align: left; }
+      th { background: #e8f2f5; color: #183640; font-size: 13px; }
+      td input {
+        width: 100%;
+        border: 1px solid transparent;
+        background: transparent;
+        padding: 7px 6px;
+      }
+      td input:focus, .field input:focus, textarea:focus {
+        outline: 2px solid #9ed0d5;
+        border-radius: 5px;
+      }
+      .download { min-height: 40px; margin-top: 14px; color: var(--accent-dark); }
+      .download a { color: var(--accent-dark); font-weight: 700; }
+      @media (max-width: 920px) {
+        .app { padding: 12px; }
+        .workspace, .summary-grid { grid-template-columns: 1fr; }
+        .input-pane, .result-pane { min-height: auto; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="app">
+      <section class="workspace">
+        <aside class="input-pane">
+          <div class="brand">
+            <span class="mark">FX</span>
+            <div>
+              <h1>FAX Excel AI</h1>
+              <p>FAX本文からExcel入力欄を自動作成</p>
+            </div>
+          </div>
+          <label class="drop-zone" for="fileInput">
+            <input id="fileInput" type="file" accept=".txt,.csv,.log" />
+            <span>OCR済みテキストを読み込み</span>
+          </label>
+          <div class="actions">
+            <button id="sampleBtn" type="button">サンプル読込</button>
+            <button id="extractBtn" type="button" class="primary">抽出</button>
+          </div>
+          <textarea id="faxText" spellcheck="false" placeholder="FAXのOCR結果、または受信内容を貼り付け"></textarea>
+        </aside>
+        <section class="result-pane">
+          <div class="toolbar">
+            <div>
+              <h2>確認結果</h2>
+              <p id="status">テキストを入れて抽出してください</p>
+            </div>
+            <button id="exportBtn" type="button" disabled>Excel出力</button>
+          </div>
+          <div class="summary-grid" id="headerFields"></div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>品番</th><th>商品名</th><th>数量</th><th>単位</th><th>単価</th><th>金額</th>
+                </tr>
+              </thead>
+              <tbody id="itemRows"></tbody>
+            </table>
+          </div>
+          <div class="download" id="download"></div>
+        </section>
+      </section>
+    </main>
+    <script>
+      const labels = {
+        received_date: "受信日",
+        sender_company: "送信元会社",
+        recipient_company: "宛先会社",
+        fax_no: "FAX番号",
+        order_no: "注文番号",
+        delivery_date: "納期",
+        person_in_charge: "担当者",
+        notes: "備考",
+      };
+      const itemKeys = ["item_code", "item_name", "quantity", "unit", "unit_price", "amount"];
+      const sampleText = `発注書
+日付: 2026/05/29
+送信元: 株式会社青葉商事
+宛先: 株式会社東都製作所 御中
+FAX: 03-1234-5678
+注文番号: AOB-20260529-018
+担当者: 佐藤
+納期: 2026/06/05
+
+品番 商品名 数量 単位 単価 金額
+AB-1020 ステンレスボルト M6 120 個 35 4200
+PX-7781 保護フィルム 40 枚 180 7200
+KT-3300 梱包用テープ 12 箱 520 6240
+
+備考: 午前中着でお願いします。`;
+      let current = { header: {}, items: [], confidence: {}, raw_text: "" };
+      const faxText = document.querySelector("#faxText");
+      const headerFields = document.querySelector("#headerFields");
+      const itemRows = document.querySelector("#itemRows");
+      const status = document.querySelector("#status");
+      const exportBtn = document.querySelector("#exportBtn");
+      const download = document.querySelector("#download");
+
+      function normalizeText(text) {
+        return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/　/g, " ").replace(/㈱|（株）/g, "株式会社").replace(/[ \t]+/g, " ").trim();
+      }
+      function firstMatch(patterns, text) {
+        for (const pattern of patterns) {
+          const match = text.match(pattern);
+          if (match) return match[1].trim().replace(/^[ :：]+|[ :：]+$/g, "");
+        }
+        return "";
+      }
+      function normalizeDate(value) {
+        if (!value) return "";
+        let match = value.match(/(\d{4})[./年-](\d{1,2})[./月-](\d{1,2})/);
+        if (match) return `${match[1]}-${String(Number(match[2])).padStart(2, "0")}-${String(Number(match[3])).padStart(2, "0")}`;
+        match = value.match(/(\d{1,2})[./月-](\d{1,2})/);
+        if (match) return `${new Date().getFullYear()}-${String(Number(match[1])).padStart(2, "0")}-${String(Number(match[2])).padStart(2, "0")}`;
+        return value;
+      }
+      function toNumber(value) {
+        const cleaned = String(value || "").replace(/[^0-9.-]/g, "");
+        if (!cleaned || cleaned === "-") return "";
+        const number = Number(cleaned);
+        return Number.isFinite(number) ? number : "";
+      }
+      function parseItems(text) {
+        const items = [];
+        const pattern = /^([A-Z0-9][A-Z0-9-]{2,})\s+(.+?)\s+(\d+(?:\.\d+)?)\s*(個|枚|箱|本|台|kg|式|m|ｍ)?\s+([\d,]+)?\s+([\d,]+)?$/i;
+        for (const rawLine of text.split("\n")) {
+          const line = rawLine.trim();
+          if (!line || (/品番|商品名|数量|単価|金額/.test(line) && line.length < 18)) continue;
+          const match = line.match(pattern);
+          if (!match) continue;
+          const quantity = toNumber(match[3]);
+          const unitPrice = toNumber(match[5]);
+          let amount = toNumber(match[6]);
+          if (amount === "" && quantity !== "" && unitPrice !== "") amount = quantity * unitPrice;
+          items.push({
+            item_code: match[1],
+            item_name: match[2].replace(/[ -:：]+$/g, ""),
+            quantity,
+            unit: match[4] || "個",
+            unit_price: unitPrice,
+            amount,
+          });
+        }
+        return items.length ? items : [{ item_code: "", item_name: "", quantity: "", unit: "", unit_price: "", amount: "" }];
+      }
+      function extractFax(text) {
+        text = normalizeText(text);
+        const header = {
+          received_date: normalizeDate(firstMatch([/(?:受信日|日付|発注日)[:： ]*([0-9./年月日-]+)/i], text)),
+          sender_company: firstMatch([/(?:送信元|差出人|From|発注元)[:： ]*(.+)/i, /(.+?(?:株式会社|有限会社|合同会社|商事|工業|産業|物流|食品))\s*(?:御中|様)?$/im], text),
+          recipient_company: firstMatch([/(?:宛先|To|納入先)[:： ]*(.+)/i], text),
+          fax_no: firstMatch([/(?:FAX|Fax|ファックス)[:： ]*([0-9\-() ]{8,})/i], text),
+          order_no: firstMatch([/(?:注文番号|発注番号|注文No\.?|Order No\.?)[:： ]*([A-Z0-9-]+)/i], text),
+          delivery_date: normalizeDate(firstMatch([/(?:納期|希望納期|納入日)[:： ]*([0-9./年月日-]+)/i], text)),
+          person_in_charge: firstMatch([/(?:担当者|担当)[:： ]*(.+)/i], text),
+          notes: firstMatch([/(?:備考|摘要|連絡事項)[:： ]*(.+)/i], text),
+        };
+        const confidence = Object.fromEntries(Object.entries(header).map(([key, value]) => [key, value ? 0.92 : 0.35]));
+        return { header, items: parseItems(text), confidence, raw_text: text };
+      }
+      function setStatus(text) { status.textContent = text; }
+      function renderHeader() {
+        headerFields.innerHTML = "";
+        for (const [key, label] of Object.entries(labels)) {
+          const wrapper = document.createElement("div");
+          wrapper.className = `field ${(current.confidence[key] || 0) < 0.7 ? "low" : ""}`;
+          const fieldLabel = document.createElement("label");
+          fieldLabel.textContent = label;
+          const input = document.createElement("input");
+          input.value = current.header[key] || "";
+          input.addEventListener("input", () => { current.header[key] = input.value; });
+          wrapper.append(fieldLabel, input);
+          headerFields.append(wrapper);
+        }
+      }
+      function renderItems() {
+        itemRows.innerHTML = "";
+        current.items.forEach((item, index) => {
+          const row = document.createElement("tr");
+          itemKeys.forEach((key) => {
+            const cell = document.createElement("td");
+            const input = document.createElement("input");
+            input.value = item[key] ?? "";
+            input.inputMode = ["quantity", "unit_price", "amount"].includes(key) ? "decimal" : "text";
+            input.addEventListener("input", () => { current.items[index][key] = input.value; });
+            cell.append(input);
+            row.append(cell);
+          });
+          itemRows.append(row);
+        });
+      }
+      function extract() {
+        const text = faxText.value.trim();
+        if (!text) {
+          setStatus("FAX本文を入力してください");
+          return;
+        }
+        current = extractFax(text);
+        renderHeader();
+        renderItems();
+        download.innerHTML = "";
+        exportBtn.disabled = false;
+        setStatus("確認して、必要なら修正できます");
+      }
+      function escapeHtml(value) {
+        return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
+      }
+      function exportExcel() {
+        const headerRows = Object.entries(labels).map(([key, label]) => `<tr><th>${label}</th><td>${escapeHtml(current.header[key])}</td></tr>`).join("");
+        const itemRowsHtml = current.items.map((item) => `<tr>${itemKeys.map((key) => `<td>${escapeHtml(item[key])}</td>`).join("")}</tr>`).join("");
+        const total = current.items.reduce((sum, item) => sum + (Number(String(item.amount).replace(/,/g, "")) || 0), 0);
+        const html = `<html><head><meta charset="utf-8"></head><body>
+          <table border="1">
+            <tr><th colspan="6" style="background:#1f4e79;color:#fff;font-size:16pt;">FAX自動入力 結果</th></tr>
+            ${headerRows}
+            <tr></tr>
+            <tr><th>品番</th><th>商品名</th><th>数量</th><th>単位</th><th>単価</th><th>金額</th></tr>
+            ${itemRowsHtml}
+            <tr><td colspan="5">合計</td><td>${total}</td></tr>
+          </table>
+          <br>
+          <table border="1"><tr><th>FAX原文</th></tr><tr><td><pre>${escapeHtml(current.raw_text)}</pre></td></tr></table>
+        </body></html>`;
+        const blob = new Blob([html], { type: "application/vnd.ms-excel;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `fax_excel_${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "")}.xls`;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        download.textContent = "Excelで開けるファイルを作成しました";
+        setStatus("Excel出力が完了しました");
+      }
+      document.querySelector("#sampleBtn").addEventListener("click", () => {
+        faxText.value = sampleText;
+        setStatus("サンプルを読み込みました");
+      });
+      document.querySelector("#extractBtn").addEventListener("click", extract);
+      exportBtn.addEventListener("click", exportExcel);
+      document.querySelector("#fileInput").addEventListener("change", async (event) => {
+        const [file] = event.target.files;
+        if (!file) return;
+        faxText.value = await file.text();
+        setStatus(`${file.name} を読み込みました`);
+      });
+      renderHeader();
+      renderItems();
+    </script>
+  </body>
+</html>

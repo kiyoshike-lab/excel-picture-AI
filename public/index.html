@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>建設FAX Excel AI 試作</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <section class="workspace">
+        <aside class="input-pane">
+          <div class="brand">
+            <span class="mark">FX</span>
+            <div>
+              <h1>建設FAX Excel AI</h1>
+              <p>資材発注・見積依頼をExcel入力欄へ自動整理</p>
+            </div>
+          </div>
+
+          <label class="drop-zone" for="fileInput">
+            <input id="fileInput" type="file" accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff,.webp,.txt,.csv,.log" />
+            <span>写真・PDF・OCR済みテキストを読み込み</span>
+          </label>
+
+          <div class="actions">
+            <button id="sampleBtn" type="button">サンプル読込</button>
+            <button id="extractBtn" type="button" class="primary">抽出</button>
+          </div>
+          <button id="autoRunBtn" type="button">受信FAXフォルダを処理</button>
+
+          <textarea id="faxText" spellcheck="false" placeholder="FAXのOCR結果、または受信内容を貼り付け"></textarea>
+        </aside>
+
+        <section class="result-pane">
+          <div class="toolbar">
+            <div>
+              <h2>確認結果</h2>
+              <p id="status">テキストを入れて抽出してください</p>
+            </div>
+            <button id="exportBtn" type="button" disabled>Excel出力</button>
+          </div>
+
+          <div class="summary-grid" id="headerFields"></div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>品番</th>
+                  <th>商品名</th>
+                  <th>数量</th>
+                  <th>単位</th>
+                  <th>単価</th>
+                  <th>金額</th>
+                </tr>
+              </thead>
+              <tbody id="itemRows"></tbody>
+            </table>
+          </div>
+
+          <div class="download" id="download"></div>
+        </section>
+      </section>
+    </main>
+    <script src="/script.js"></script>
+  </body>
+</html>
