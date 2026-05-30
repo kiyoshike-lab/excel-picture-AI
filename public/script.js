@@ -1,8 +1,8 @@
 const labels = {
-  received_date: "受信日",
-  document_type: "書類種別",
-  sender_company: "送信元会社",
-  recipient_company: "宛先会社",
+  received_date: "日付",
+  document_type: "書類の種類",
+  sender_company: "送った会社",
+  recipient_company: "あて先",
   fax_no: "FAX番号",
   order_no: "注文番号",
   project_name: "工事名",
@@ -15,7 +15,7 @@ const labels = {
 };
 
 const itemKeys = ["item_code", "item_name", "quantity", "unit", "unit_price", "amount"];
-const fileExtensions = [".pdf", ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"];
+const uploadExtensions = [".pdf", ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"];
 
 const sampleText = `資材発注書
 日付: 2026/05/29
@@ -99,11 +99,11 @@ function renderItems() {
 async function extract() {
   const text = faxText.value.trim();
   if (!text) {
-    setStatus("原本データを入力してください", "warning");
+    setStatus("先に写真・PDFを選ぶか、文章を貼り付けてください", "warning");
     return;
   }
 
-  setStatus("読み取り結果を整理しています...", "busy");
+  setStatus("内容を読み取っています...", "busy");
   download.innerHTML = "";
   const response = await fetch("/api/extract", {
     method: "POST",
@@ -114,19 +114,19 @@ async function extract() {
   renderHeader();
   renderItems();
   exportBtn.disabled = false;
-  setStatus("確認して、必要な箇所だけ修正できます", "success");
+  setStatus("読み取りました。右側を確認してください", "success");
 }
 
 async function exportExcel() {
-  setStatus("Excelを作成しています...", "busy");
+  setStatus("Excelファイルを作っています...", "busy");
   const response = await fetch("/api/export", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(current),
   });
   const result = await response.json();
-  download.innerHTML = `<a href="${result.download_url}">${result.file}</a> を作成しました`;
-  setStatus("Excel出力が完了しました", "success");
+  download.innerHTML = `<a href="${result.download_url}">${result.file}</a> を保存できます`;
+  setStatus("Excelファイルができました", "success");
 }
 
 async function autoRun() {
@@ -136,8 +136,8 @@ async function autoRun() {
   const result = await response.json();
   const rows = result.results || [];
   if (!rows.length) {
-    setStatus("受信FAXフォルダに新しいファイルはありません", "neutral");
-    download.textContent = `監視対象: ${result.folder}`;
+    setStatus("新しいFAXファイルはありません", "neutral");
+    download.textContent = `確認したフォルダ: ${result.folder}`;
     return;
   }
   download.innerHTML = rows
@@ -153,12 +153,12 @@ async function autoRun() {
 
 function shouldUploadToServer(file) {
   const name = file.name.toLowerCase();
-  return fileExtensions.some((extension) => name.endsWith(extension));
+  return uploadExtensions.some((extension) => name.endsWith(extension));
 }
 
 document.querySelector("#sampleBtn").addEventListener("click", () => {
   faxText.value = sampleText;
-  setStatus("サンプルを読み込みました", "success");
+  setStatus("サンプルを入れました。次に「読み取る」を押してください", "success");
 });
 
 document.querySelector("#extractBtn").addEventListener("click", extract);
@@ -170,22 +170,22 @@ document.querySelector("#fileInput").addEventListener("change", async (event) =>
   if (!file) return;
 
   if (shouldUploadToServer(file)) {
-    setStatus("ファイルを読み取っています...", "busy");
+    setStatus("ファイルを読み込んでいます...", "busy");
     const formData = new FormData();
     formData.append("file", file);
     const response = await fetch("/api/read-file", { method: "POST", body: formData });
     const result = await response.json();
     if (!response.ok || result.error) {
-      setStatus(result.error || "ファイルを読み取れませんでした", "warning");
+      setStatus(result.error || "ファイルを読み込めませんでした", "warning");
       return;
     }
     faxText.value = result.text || "";
-    setStatus(result.warning || `${file.name} を読み込みました`, result.warning ? "warning" : "success");
+    setStatus(result.warning || "読み込みました。次に「読み取る」を押してください", result.warning ? "warning" : "success");
     return;
   }
 
   faxText.value = await file.text();
-  setStatus(`${file.name} を読み込みました`, "success");
+  setStatus("読み込みました。次に「読み取る」を押してください", "success");
 });
 
 renderHeader();

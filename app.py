@@ -4,6 +4,7 @@ from urllib.parse import urlparse
 import cgi
 import io
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -194,7 +195,49 @@ def read_pdf_text(file_bytes):
         text = page.extract_text() or ""
         if text.strip():
             pages.append(f"--- PDF {index}ページ ---\n{text.strip()}")
-    return "\n\n".join(pages).strip()
+    text = "\n\n".join(pages).strip()
+    if text:
+        return text
+    return read_scanned_pdf_text(file_bytes)
+
+
+def read_scanned_pdf_text(file_bytes):
+    pdftoppm = shutil.which("pdftoppm")
+    tesseract = shutil.which("tesseract")
+    if not pdftoppm or not tesseract:
+        return ""
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp = Path(temp_dir)
+        pdf_path = temp / "input.pdf"
+        image_base = temp / "page"
+        pdf_path.write_bytes(file_bytes)
+        convert = subprocess.run(
+            [pdftoppm, "-png", "-r", "220", str(pdf_path), str(image_base)],
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+        if convert.returncode != 0:
+            return ""
+
+        pages = []
+        for index, image_path in enumerate(sorted(temp.glob("page-*.png")), start=1):
+            output_base = temp / f"ocr_{index}"
+            result = subprocess.run(
+                [tesseract, str(image_path), str(output_base), "-l", "jpn+eng", "--psm", "6"],
+                capture_output=True,
+                text=True,
+                timeout=90,
+            )
+            if result.returncode != 0:
+                continue
+            text_path = output_base.with_suffix(".txt")
+            if text_path.exists():
+                page_text = text_path.read_text(encoding="utf-8", errors="ignore").strip()
+                if page_text:
+                    pages.append(f"--- OCR PDF {index}ページ ---\n{page_text}")
+        return "\n\n".join(pages).strip()
 
 
 def read_image_text(file_bytes, suffix):
@@ -330,6 +373,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
+        if parsed.path == "/health":
+            self.send_json({"status": "ok"})
+            return
         if parsed.path.startswith("/download/"):
             self.send_download(Path(parsed.path).name)
             return
@@ -409,9 +455,10 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     INCOMING.mkdir(exist_ok=True)
     OUTPUTS.mkdir(exist_ok=True)
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    print(f"http://127.0.0.1:{port}")
+    port = int(os.environ.get("PORT") or (sys.argv[1] if len(sys.argv) > 1 else 8765))
+    host = os.environ.get("HOST", "0.0.0.0")
+    server = ThreadingHTTPServer((host, port), Handler)
+    print(f"http://{host}:{port}")
     server.serve_forever()
 
 

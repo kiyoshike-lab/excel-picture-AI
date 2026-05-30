@@ -43,9 +43,23 @@ pip install -r requirements.txt
 python app.py 8765
 ```
 
+## Renderで写真OCRつきデモを公開する
+
+このリポジトリにはRender用の `Dockerfile` と `render.yaml` を入れています。
+
+1. GitHubにこのリポジトリを上げる
+2. Renderで「New Web Service」を作成
+3. GitHubリポジトリを選択
+4. EnvironmentはDockerを選択
+5. Deploy
+
+Docker内にTesseract OCR日本語パックを入れるため、Render上では写真・画像アップロードからOCR読み取りまで動く構成です。
+
 ## 写真OCRについて
 
-写真・画像の読み取り口は実装済みです。PCにTesseract OCR、またはクラウドOCRを追加すると、撮影した写真から文字を読んでExcel化できます。OCRが未導入の場合は、画面に「OCR追加が必要」と表示します。
+写真・画像の読み取り口は実装済みです。ローカルPCで動かす場合はTesseract OCRを入れると、撮影した写真から文字を読んでExcel化できます。RenderのDocker構成ではTesseract OCRを自動で入れます。
+
+GitHub Pages版は画面デモ用です。写真OCRや本格的なExcel生成は、Renderまたはローカルアプリで使います。
 
 ## 注意
 
