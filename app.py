@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 from datetime import datetime
 from html.parser import HTMLParser
@@ -42,23 +43,28 @@ DEFAULT_CONFIG = {
     "auto_process_to_review": True,
     "ocr_min_chars": 8,
     "ocr_psm": "6",
-    "ocr_timeout_seconds": 5,
+    "ocr_timeout_seconds": 2,
     "ocr_preprocess": True,
-    "ocr_pdf_dpi": 110,
+    "ocr_preprocess_mode": "resize",
+    "ocr_processed_format": "jpeg",
+    "ocr_jpeg_quality": 60,
+    "ocr_pdf_dpi": 72,
     "ocr_pdf_image_format": "jpeg",
-    "ocr_target_long_side": 900,
-    "ocr_min_long_side": 650,
+    "ocr_target_long_side": 560,
+    "ocr_min_long_side": 420,
     "ocr_max_pages": 1,
-    "ocr_retry_when_empty": True,
-    "pdf_text_max_pages": 3,
-    "xlsx_max_rows_per_sheet": 120,
-    "docx_max_paragraphs": 80,
-    "docx_max_table_rows": 80,
-    "html_max_chars": 30000,
-    "email_max_parts": 5,
-    "zip_max_files": 8,
-    "zip_max_file_bytes": 2000000,
-    "text_max_chars": 30000,
+    "ocr_retry_when_empty": False,
+    "request_timeout_seconds": 9,
+    "max_upload_files": 1,
+    "pdf_text_max_pages": 1,
+    "xlsx_max_rows_per_sheet": 60,
+    "docx_max_paragraphs": 40,
+    "docx_max_table_rows": 40,
+    "html_max_chars": 12000,
+    "email_max_parts": 2,
+    "zip_max_files": 3,
+    "zip_max_file_bytes": 800000,
+    "text_max_chars": 12000,
 }
 
 
@@ -324,7 +330,7 @@ def read_scanned_pdf_text(file_bytes):
             [pdftoppm, *format_args, "-r", dpi, "-f", "1", "-l", max_pages, str(pdf_path), str(image_base)],
             capture_output=True,
             text=True,
-            timeout=max(8, int(config.get("ocr_timeout_seconds", 5)) * 2),
+            timeout=max(3, int(config.get("ocr_timeout_seconds", 2)) + 2),
         )
         if convert.returncode != 0:
             return ""
@@ -367,6 +373,10 @@ def run_tesseract(tesseract, image_path, output_base, lang):
         "load_system_dawg=0",
         "-c",
         "load_freq_dawg=0",
+        "-c",
+        f"debug_file={'NUL' if os.name == 'nt' else '/dev/null'}",
+        "-c",
+        "tessedit_do_invert=0",
     ]
     started = datetime.now()
     result = subprocess.run(
@@ -422,6 +432,7 @@ def preprocess_image_file(image_path):
         image = image.convert("L")
         width, height = image.size
         config = load_config()
+        mode = str(config.get("ocr_preprocess_mode", "resize")).lower()
         target = int(config.get("ocr_target_long_side", 1500))
         min_long_side = int(config.get("ocr_min_long_side", 0))
         long_side = max(width, height)
@@ -430,13 +441,19 @@ def preprocess_image_file(image_path):
         if should_resize_down or should_resize_up:
             resize_to = target if should_resize_down else min_long_side
             scale = resize_to / long_side
-            image = image.resize((int(width * scale), int(height * scale)), Image.Resampling.LANCZOS)
-        image = ImageOps.autocontrast(image)
-        image = ImageEnhance.Contrast(image).enhance(1.6)
-        image = image.filter(ImageFilter.SHARPEN)
-        image = image.point(lambda pixel: 255 if pixel > 170 else 0)
-        processed = image_path.with_name(image_path.stem + "_ocr.png")
-        image.save(processed)
+            image = image.resize((int(width * scale), int(height * scale)), Image.Resampling.BILINEAR)
+        if mode == "clean":
+            image = ImageOps.autocontrast(image)
+            image = ImageEnhance.Contrast(image).enhance(1.6)
+            image = image.filter(ImageFilter.SHARPEN)
+            image = image.point(lambda pixel: 255 if pixel > 170 else 0)
+        processed_format = str(config.get("ocr_processed_format", "jpeg")).lower()
+        if processed_format in {"jpg", "jpeg"}:
+            processed = image_path.with_name(image_path.stem + "_ocr.jpg")
+            image.save(processed, "JPEG", quality=int(config.get("ocr_jpeg_quality", 72)), optimize=False)
+        else:
+            processed = image_path.with_name(image_path.stem + "_ocr.png")
+            image.save(processed)
         return processed
     except Exception as exc:
         write_history("image_preprocess_failed", {"path": str(image_path), "error": str(exc)})
@@ -957,13 +974,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.path in {"/api/read-file", "/api/read-pdf"}:
+            started = time.monotonic()
+            config = load_config()
+            request_timeout = float(config.get("request_timeout_seconds", 9))
+            max_upload_files = int(config.get("max_upload_files", 1))
             file_items = self.multipart_files()
             if not file_items:
                 self.send_json({"error": "ファイルを読み取れませんでした。"}, 400)
                 return
             parts = []
             warnings = []
-            for file_item in file_items:
+            if len(file_items) > max_upload_files:
+                warnings.append(f"10秒以内にするため先頭{max_upload_files}ファイルだけ読みました。")
+            for file_item in file_items[:max_upload_files]:
+                if time.monotonic() - started > request_timeout:
+                    warnings.append("10秒以内にするため、残りの読み取りを打ち切りました。")
+                    break
                 if file_item is None or not getattr(file_item, "file", None):
                     continue
                 filename = file_item.filename or "upload"
@@ -972,6 +998,9 @@ class Handler(BaseHTTPRequestHandler):
                     parts.append(f"--- {filename} ---\n{text}")
                 if warning:
                     warnings.append(f"{filename}: {warning}")
+                if time.monotonic() - started > request_timeout:
+                    warnings.append("10秒以内にするため、ここで読み取りを終了しました。")
+                    break
             self.send_json({"text": "\n\n".join(parts).strip(), "warning": " / ".join(warnings)})
             return
 
@@ -995,12 +1024,17 @@ class Handler(BaseHTTPRequestHandler):
                 "ocr_psm",
                 "ocr_timeout_seconds",
                 "ocr_preprocess",
+                "ocr_preprocess_mode",
+                "ocr_processed_format",
+                "ocr_jpeg_quality",
                 "ocr_pdf_dpi",
                 "ocr_pdf_image_format",
                 "ocr_target_long_side",
                 "ocr_min_long_side",
                 "ocr_max_pages",
                 "ocr_retry_when_empty",
+                "request_timeout_seconds",
+                "max_upload_files",
                 "pdf_text_max_pages",
                 "xlsx_max_rows_per_sheet",
                 "docx_max_paragraphs",

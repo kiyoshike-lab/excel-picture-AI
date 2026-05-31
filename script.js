@@ -35,8 +35,8 @@ const serverReadExtensions = [
   ".zip",
 ];
 const browserCompressExtensions = [".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"];
-const browserImageMaxSide = 1200;
-const browserImageQuality = 0.72;
+const browserImageMaxSide = 640;
+const browserImageQuality = 0.55;
 
 const sampleText = `資材発注書
 日付: 2026/05/29
