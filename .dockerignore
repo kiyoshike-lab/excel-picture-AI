@@ -1,0 +1,12 @@
+.git/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+outputs/
+incoming_fax/
+processed_fax/
+
+.DS_Store
+Thumbs.db
