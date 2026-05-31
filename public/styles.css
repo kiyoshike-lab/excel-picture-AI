@@ -48,14 +48,16 @@ button:hover {
 }
 
 button.primary,
-#exportBtn {
+#exportBtn,
+#approveBtn {
   background: var(--accent);
   color: #fff;
   border-color: var(--accent);
 }
 
 button.primary:hover,
-#exportBtn:hover {
+#exportBtn:hover,
+#approveBtn:hover {
   background: var(--accent-dark);
 }
 
@@ -233,6 +235,10 @@ p {
   gap: 3px;
 }
 
+.section-heading.compact {
+  margin-top: 6px;
+}
+
 .drop-zone {
   display: grid;
   place-items: center;
@@ -315,7 +321,17 @@ textarea {
 .toolbar-actions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 8px;
+}
+
+.reviewer-input {
+  min-height: 42px;
+  width: 130px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  padding: 9px 10px;
 }
 
 .summary-grid {
@@ -407,6 +423,42 @@ textarea:focus {
 .download a {
   color: var(--accent-dark);
   font-weight: 700;
+}
+
+.review-list {
+  display: grid;
+  gap: 8px;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.review-item {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  min-height: auto;
+  text-align: left;
+  background: #fff;
+  padding: 10px 12px;
+}
+
+.review-item strong {
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.review-item span,
+.empty-state {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.empty-state {
+  border: 1px dashed var(--line-strong);
+  border-radius: 8px;
+  background: var(--soft);
+  padding: 12px;
+  text-align: center;
 }
 
 @media (max-width: 960px) {

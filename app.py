@@ -2,6 +2,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 import cgi
+import csv
+import email
+import hashlib
 import io
 import json
 import os
@@ -10,25 +13,37 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import zipfile
 from datetime import datetime
+from html.parser import HTMLParser
 
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from pypdf import PdfReader
+from docx import Document
 
 
 ROOT = Path(__file__).resolve().parent
 PUBLIC = ROOT / "public"
 OUTPUTS = ROOT / "outputs"
-INCOMING = ROOT / "incoming_fax"
+PENDING = ROOT / "pending_reviews"
 PROCESSED = ROOT / "processed_fax"
+REJECTED = ROOT / "rejected_fax"
 PC_EXCEL_DIR = ROOT / "pc_excel"
-LEDGER_PATH = Path(os.environ.get("LEDGER_PATH", PC_EXCEL_DIR / "fax_ledger.xlsx"))
+CONFIG_PATH = ROOT / "config.json"
+HISTORY_PATH = ROOT / "history.jsonl"
+
+DEFAULT_CONFIG = {
+    "incoming_fax_dir": str(ROOT / "incoming_fax"),
+    "ledger_path": str(PC_EXCEL_DIR / "fax_ledger.xlsx"),
+    "reviewer_default": "社員確認",
+    "auto_process_to_review": True,
+}
 
 
 FIELD_LABELS = {
-    "received_date": "受信日",
+    "received_date": "日付",
     "document_type": "書類種別",
     "sender_company": "送信元会社",
     "recipient_company": "宛先会社",
@@ -45,7 +60,7 @@ FIELD_LABELS = {
 
 ITEM_LABELS = {
     "item_code": "品番",
-    "item_name": "商品名",
+    "item_name": "商品名・資材名",
     "quantity": "数量",
     "unit": "単位",
     "unit_price": "単価",
@@ -62,9 +77,50 @@ LEDGER_COLUMNS = {
     **ITEM_LABELS,
 }
 
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
-TEXT_EXTENSIONS = {".txt", ".csv", ".log"}
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp", ".heic", ".heif"}
+TEXT_EXTENSIONS = {".txt", ".csv", ".tsv", ".log", ".json", ".xml", ".md", ".rtf"}
 PDF_EXTENSIONS = {".pdf"}
+OFFICE_EXTENSIONS = {".docx", ".xlsx", ".xlsm"}
+HTML_EXTENSIONS = {".html", ".htm"}
+EMAIL_EXTENSIONS = {".eml"}
+ARCHIVE_EXTENSIONS = {".zip"}
+
+
+def now_text():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def load_config():
+    config = DEFAULT_CONFIG.copy()
+    if CONFIG_PATH.exists():
+        try:
+            config.update(json.loads(CONFIG_PATH.read_text(encoding="utf-8")))
+        except json.JSONDecodeError:
+            pass
+    if os.environ.get("INCOMING_FAX_DIR"):
+        config["incoming_fax_dir"] = os.environ["INCOMING_FAX_DIR"]
+    if os.environ.get("LEDGER_PATH"):
+        config["ledger_path"] = os.environ["LEDGER_PATH"]
+    return config
+
+
+def save_config(config):
+    CONFIG_PATH.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def incoming_dir():
+    return Path(load_config()["incoming_fax_dir"])
+
+
+def ledger_path():
+    return Path(load_config()["ledger_path"])
+
+
+def write_history(event, data):
+    entry = {"time": now_text(), "event": event, **data}
+    HISTORY_PATH.parent.mkdir(exist_ok=True)
+    with HISTORY_PATH.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
 def normalize_text(text):
@@ -208,9 +264,7 @@ def read_pdf_text(file_bytes):
         if text.strip():
             pages.append(f"--- PDF {index}ページ ---\n{text.strip()}")
     text = "\n\n".join(pages).strip()
-    if text:
-        return text
-    return read_scanned_pdf_text(file_bytes)
+    return text or read_scanned_pdf_text(file_bytes)
 
 
 def read_scanned_pdf_text(file_bytes):
@@ -224,12 +278,7 @@ def read_scanned_pdf_text(file_bytes):
         pdf_path = temp / "input.pdf"
         image_base = temp / "page"
         pdf_path.write_bytes(file_bytes)
-        convert = subprocess.run(
-            [pdftoppm, "-png", "-r", "220", str(pdf_path), str(image_base)],
-            capture_output=True,
-            text=True,
-            timeout=90,
-        )
+        convert = subprocess.run([pdftoppm, "-png", "-r", "220", str(pdf_path), str(image_base)], capture_output=True, text=True, timeout=90)
         if convert.returncode != 0:
             return ""
 
@@ -253,9 +302,11 @@ def read_scanned_pdf_text(file_bytes):
 
 
 def read_image_text(file_bytes, suffix):
+    if suffix in {".heic", ".heif"}:
+        return "", "HEIC/HEIFはこの環境では未対応です。iPhone側で「互換性優先」にするか、JPG/PNGに変換してアップロードしてください。"
     tesseract = shutil.which("tesseract")
     if not tesseract:
-        return "", "写真・画像OCRにはOCRエンジンの追加が必要です。TesseractまたはクラウドOCRを入れると、このまま自動入力できます。"
+        return "", "写真・画像OCRにはTesseract OCRの追加が必要です。RenderのDocker構成では自動で入ります。"
 
     with tempfile.TemporaryDirectory() as temp_dir:
         temp = Path(temp_dir)
@@ -271,17 +322,131 @@ def read_image_text(file_bytes, suffix):
         return text.strip(), "" if text.strip() else "画像から文字を読み取れませんでした。写真の明るさや傾きを確認してください。"
 
 
+class TextOnlyHTMLParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.parts = []
+
+    def handle_data(self, data):
+        text = data.strip()
+        if text:
+            self.parts.append(text)
+
+
+def read_docx_text(file_bytes):
+    with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as temp:
+        temp.write(file_bytes)
+        temp_path = temp.name
+    try:
+        document = Document(temp_path)
+        parts = [paragraph.text for paragraph in document.paragraphs if paragraph.text.strip()]
+        for table in document.tables:
+            for row in table.rows:
+                values = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                if values:
+                    parts.append(" ".join(values))
+        return "\n".join(parts).strip()
+    finally:
+        Path(temp_path).unlink(missing_ok=True)
+
+
+def read_xlsx_text(file_bytes):
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as temp:
+        temp.write(file_bytes)
+        temp_path = temp.name
+    workbook = None
+    try:
+        workbook = load_workbook(temp_path, data_only=True, read_only=True)
+        parts = []
+        for sheet in workbook.worksheets:
+            parts.append(f"--- Excel sheet: {sheet.title} ---")
+            for row in sheet.iter_rows(values_only=True):
+                values = [str(value) for value in row if value not in (None, "")]
+                if values:
+                    parts.append(" ".join(values))
+        return "\n".join(parts).strip()
+    finally:
+        if workbook:
+            workbook.close()
+        Path(temp_path).unlink(missing_ok=True)
+
+
+def read_html_text(file_bytes):
+    parser = TextOnlyHTMLParser()
+    parser.feed(file_bytes.decode("utf-8", errors="ignore"))
+    return "\n".join(parser.parts).strip()
+
+
+def read_email_text(file_bytes):
+    message = email.message_from_bytes(file_bytes)
+    parts = []
+    subject = message.get("subject", "")
+    if subject:
+        parts.append(f"件名: {subject}")
+    for part in message.walk():
+        content_type = part.get_content_type()
+        if content_type not in {"text/plain", "text/html"}:
+            continue
+        payload = part.get_payload(decode=True)
+        if not payload:
+            continue
+        charset = part.get_content_charset() or "utf-8"
+        text = payload.decode(charset, errors="ignore")
+        if content_type == "text/html":
+            text = read_html_text(text.encode("utf-8"))
+        if text.strip():
+            parts.append(text.strip())
+    return "\n\n".join(parts).strip()
+
+
+def read_archive_text(file_bytes):
+    parts = []
+    warnings = []
+    with zipfile.ZipFile(io.BytesIO(file_bytes)) as archive:
+        for info in archive.infolist():
+            if info.is_dir():
+                continue
+            inner_name = info.filename
+            inner_suffix = Path(inner_name).suffix.lower()
+            if inner_suffix in ARCHIVE_EXTENSIONS:
+                warnings.append(f"{inner_name}: ZIPの中のZIPは読み飛ばしました。")
+                continue
+            try:
+                inner_text, warning = read_file_text(inner_name, archive.read(info))
+            except Exception as exc:
+                inner_text, warning = "", f"{inner_name}: 読み取りに失敗しました: {exc}"
+            if inner_text:
+                parts.append(f"--- {inner_name} ---\n{inner_text}")
+            if warning:
+                warnings.append(f"{inner_name}: {warning}")
+    return "\n\n".join(parts).strip(), " / ".join(warnings)
+
+
 def read_file_text(filename, file_bytes):
     suffix = Path(filename).suffix.lower()
     if suffix in PDF_EXTENSIONS:
         text = read_pdf_text(file_bytes)
-        warning = "" if text else "PDF内に文字情報が見つかりませんでした。スキャン画像PDFの場合はOCR追加が必要です。"
+        warning = "" if text else "PDF内に文字情報が見つかりませんでした。スキャンPDFの場合はOCRの追加が必要です。"
         return text, warning
     if suffix in IMAGE_EXTENSIONS:
         return read_image_text(file_bytes, suffix)
+    if suffix == ".docx":
+        return read_docx_text(file_bytes), ""
+    if suffix in {".xlsx", ".xlsm"}:
+        return read_xlsx_text(file_bytes), ""
+    if suffix == ".doc":
+        return "", "古いWord形式（.doc）は未対応です。.docxかPDFに変換してください。"
+    if suffix == ".xls":
+        return "", "古いExcel形式（.xls）は未対応です。.xlsxかPDFに変換してください。"
+    if suffix in HTML_EXTENSIONS:
+        return read_html_text(file_bytes), ""
+    if suffix in EMAIL_EXTENSIONS:
+        return read_email_text(file_bytes), ""
+    if suffix in ARCHIVE_EXTENSIONS:
+        return read_archive_text(file_bytes)
     if suffix in TEXT_EXTENSIONS:
         return file_bytes.decode("utf-8-sig", errors="ignore").strip(), ""
-    return "", "対応ファイルはPDF、画像、テキストです。"
+    return "", f"{suffix or '拡張子なし'} は未対応です。PDF、画像、Word、Excel、ZIP、テキストに変換してください。"
 
 
 def create_workbook(payload):
@@ -301,7 +466,7 @@ def create_workbook(payload):
     thin = Side(style="thin", color="B7C9D6")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-    ws["A1"] = "建設FAX自動入力 結果"
+    ws["A1"] = "建設FAX入力結果"
     ws["A1"].font = Font(size=16, bold=True, color="FFFFFF")
     ws["A1"].fill = title_fill
     ws.merge_cells("A1:H1")
@@ -355,11 +520,10 @@ def create_workbook(payload):
 
 
 def ensure_ledger_workbook():
-    LEDGER_PATH.parent.mkdir(exist_ok=True)
-    if LEDGER_PATH.exists():
-        from openpyxl import load_workbook
-
-        wb = load_workbook(LEDGER_PATH)
+    path = ledger_path()
+    path.parent.mkdir(exist_ok=True)
+    if path.exists():
+        wb = load_workbook(path)
         ws = wb["FAX台帳"] if "FAX台帳" in wb.sheetnames else wb.active
         existing_headers = [ws.cell(row=1, column=col).value for col in range(1, ws.max_column + 1)]
         missing_labels = [label for label in LEDGER_COLUMNS.values() if label not in existing_headers]
@@ -371,7 +535,7 @@ def ensure_ledger_workbook():
                 cell.fill = header_fill
                 cell.font = Font(bold=True)
                 ws.column_dimensions[get_column_letter(start_col + offset)].width = 18
-            wb.save(LEDGER_PATH)
+            wb.save(path)
         return
 
     wb = Workbook()
@@ -388,16 +552,14 @@ def ensure_ledger_workbook():
         cell.alignment = Alignment(vertical="center", wrap_text=True)
         ws.column_dimensions[get_column_letter(col)].width = 18 if col != 2 else 26
     ws.freeze_panes = "A2"
-    wb.save(LEDGER_PATH)
+    wb.save(path)
 
 
-def append_to_pc_excel(payload):
+def append_to_pc_excel(payload, reviewer=None):
     ensure_ledger_workbook()
-    wb = Workbook()
+    path = ledger_path()
     try:
-        from openpyxl import load_workbook
-
-        wb = load_workbook(LEDGER_PATH)
+        wb = load_workbook(path)
     except PermissionError as exc:
         raise PermissionError("Excel台帳が開かれています。閉じてからもう一度実行してください。") from exc
 
@@ -405,14 +567,15 @@ def append_to_pc_excel(payload):
     header_to_col = {ws.cell(row=1, column=col).value: col for col in range(1, ws.max_column + 1)}
     header = payload.get("header", {})
     items = payload.get("items") or [{}]
-    processed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    processed_at = now_text()
+    reviewed_at = now_text()
     rows_added = 0
 
     for item in items:
         row_data = {
-            "review_status": "社員確認待ち",
-            "reviewer": "",
-            "reviewed_at": "",
+            "review_status": "確認済み",
+            "reviewer": reviewer or load_config().get("reviewer_default", "社員確認"),
+            "reviewed_at": reviewed_at,
             "processed_at": processed_at,
             "source_name": payload.get("source_name", ""),
             **header,
@@ -429,40 +592,122 @@ def append_to_pc_excel(payload):
         rows_added += 1
 
     try:
-        wb.save(LEDGER_PATH)
+        wb.save(path)
     except PermissionError as exc:
         raise PermissionError("Excel台帳が開かれています。閉じてからもう一度実行してください。") from exc
-    return {"path": str(LEDGER_PATH), "rows_added": rows_added}
+    write_history("approved_to_excel", {"source": payload.get("source_name", ""), "rows_added": rows_added, "ledger": str(path)})
+    return {"path": str(path), "rows_added": rows_added}
+
+
+def review_id_for(source_name, content_hash):
+    base = re.sub(r"[^A-Za-z0-9_-]+", "_", Path(source_name or "manual").stem).strip("_") or "manual"
+    return f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{base}_{content_hash[:8]}"
+
+
+def save_pending_review(payload, source_name="manual", original_path=""):
+    PENDING.mkdir(exist_ok=True)
+    raw = payload.get("raw_text", "")
+    content_hash = hashlib.sha256((source_name + raw).encode("utf-8", errors="ignore")).hexdigest()
+
+    for existing in PENDING.glob("*.json"):
+        try:
+            data = json.loads(existing.read_text(encoding="utf-8"))
+            if data.get("content_hash") == content_hash:
+                return data
+        except json.JSONDecodeError:
+            continue
+
+    review_id = review_id_for(source_name, content_hash)
+    review = {
+        "id": review_id,
+        "status": "社員確認待ち",
+        "created_at": now_text(),
+        "source_name": source_name,
+        "original_path": original_path,
+        "content_hash": content_hash,
+        "payload": {**payload, "source_name": source_name},
+    }
+    (PENDING / f"{review_id}.json").write_text(json.dumps(review, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_history("pending_review_created", {"id": review_id, "source": source_name})
+    return review
+
+
+def load_review(review_id):
+    path = PENDING / f"{review_id}.json"
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def list_reviews():
+    PENDING.mkdir(exist_ok=True)
+    reviews = []
+    for path in sorted(PENDING.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            review = json.loads(path.read_text(encoding="utf-8"))
+            payload = review.get("payload", {})
+            header = payload.get("header", {})
+            reviews.append(
+                {
+                    "id": review.get("id"),
+                    "status": review.get("status"),
+                    "created_at": review.get("created_at"),
+                    "source_name": review.get("source_name"),
+                    "order_no": header.get("order_no", ""),
+                    "project_name": header.get("project_name", ""),
+                    "site_name": header.get("site_name", ""),
+                    "items_count": len(payload.get("items") or []),
+                }
+            )
+        except json.JSONDecodeError:
+            continue
+    return reviews
+
+
+def approve_review(review_id, reviewer=None, payload=None):
+    review = load_review(review_id)
+    if not review:
+        raise FileNotFoundError("確認待ちデータが見つかりません。")
+    final_payload = payload or review.get("payload", {})
+    result = append_to_pc_excel(final_payload, reviewer=reviewer)
+    (PENDING / f"{review_id}.json").unlink(missing_ok=True)
+    write_history("review_approved", {"id": review_id, "reviewer": reviewer or ""})
+    return result
+
+
+def reject_review(review_id, reason=""):
+    review = load_review(review_id)
+    if not review:
+        raise FileNotFoundError("確認待ちデータが見つかりません。")
+    REJECTED.mkdir(exist_ok=True)
+    review["status"] = "差し戻し"
+    review["rejected_at"] = now_text()
+    review["reject_reason"] = reason
+    (REJECTED / f"{review_id}.json").write_text(json.dumps(review, ensure_ascii=False, indent=2), encoding="utf-8")
+    (PENDING / f"{review_id}.json").unlink(missing_ok=True)
+    write_history("review_rejected", {"id": review_id, "reason": reason})
+    return {"id": review_id, "status": "差し戻し"}
 
 
 def process_incoming_once():
-    INCOMING.mkdir(exist_ok=True)
+    folder = incoming_dir()
+    folder.mkdir(exist_ok=True)
     PROCESSED.mkdir(exist_ok=True)
     results = []
-    for path in sorted(p for p in INCOMING.iterdir() if p.is_file()):
-        text, warning = read_file_text(path.name, path.read_bytes())
+    for path in sorted(p for p in folder.iterdir() if p.is_file()):
+        file_bytes = path.read_bytes()
+        text, warning = read_file_text(path.name, file_bytes)
         if not text:
             results.append({"source": path.name, "status": "needs_ocr", "warning": warning})
             continue
         data = extract_fax(text)
         data["source_name"] = path.stem
-        output = create_workbook(data)
-        ledger = append_to_pc_excel(data)
+        review = save_pending_review(data, source_name=path.name, original_path=str(path))
         target = PROCESSED / path.name
         if target.exists():
             target = PROCESSED / f"{path.stem}_{datetime.now().strftime('%H%M%S')}{path.suffix}"
         path.replace(target)
-        results.append(
-            {
-                "source": path.name,
-                "status": "created",
-                "file": output.name,
-                "download_url": f"/download/{output.name}",
-                "ledger_path": ledger["path"],
-                "rows_added": ledger["rows_added"],
-                "warning": warning,
-            }
-        )
+        results.append({"source": path.name, "status": "pending_review", "review_id": review["id"], "warning": warning})
     return results
 
 
@@ -480,9 +725,24 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/health":
             self.send_json({"status": "ok"})
             return
+        if parsed.path == "/api/config":
+            config = load_config()
+            self.send_json({**config, "pending_count": len(list_reviews())})
+            return
+        if parsed.path == "/api/reviews":
+            self.send_json({"reviews": list_reviews()})
+            return
+        if parsed.path.startswith("/api/reviews/"):
+            review = load_review(Path(parsed.path).name)
+            if not review:
+                self.send_json({"error": "確認待ちデータが見つかりません。"}, 404)
+                return
+            self.send_json(review)
+            return
         if parsed.path.startswith("/download/"):
             self.send_download(Path(parsed.path).name)
             return
+
         path = "/index.html" if parsed.path == "/" else parsed.path
         file_path = (PUBLIC / path.lstrip("/")).resolve()
         if not str(file_path).startswith(str(PUBLIC.resolve())) or not file_path.exists():
@@ -500,32 +760,57 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def multipart_file(self):
+    def multipart_files(self):
         ctype, _ = cgi.parse_header(self.headers.get("Content-Type", ""))
         if ctype != "multipart/form-data":
-            return None
+            return []
         form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={"REQUEST_METHOD": "POST"})
-        return form["file"] if "file" in form else None
+        if "file" not in form:
+            return []
+        item = form["file"]
+        return item if isinstance(item, list) else [item]
+
+    def read_json_body(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        return json.loads(self.rfile.read(length).decode("utf-8") or "{}")
 
     def do_POST(self):
         if self.path in {"/api/read-file", "/api/read-pdf"}:
-            file_item = self.multipart_file()
-            if file_item is None or not getattr(file_item, "file", None):
+            file_items = self.multipart_files()
+            if not file_items:
                 self.send_json({"error": "ファイルを読み取れませんでした。"}, 400)
                 return
-            text, warning = read_file_text(file_item.filename or "upload", file_item.file.read())
-            self.send_json({"text": text, "warning": warning})
+            parts = []
+            warnings = []
+            for file_item in file_items:
+                if file_item is None or not getattr(file_item, "file", None):
+                    continue
+                filename = file_item.filename or "upload"
+                text, warning = read_file_text(filename, file_item.file.read())
+                if text:
+                    parts.append(f"--- {filename} ---\n{text}")
+                if warning:
+                    warnings.append(f"{filename}: {warning}")
+            self.send_json({"text": "\n\n".join(parts).strip(), "warning": " / ".join(warnings)})
             return
 
         if self.path == "/api/auto-run":
-            self.send_json({"folder": str(INCOMING), "results": process_incoming_once()})
+            self.send_json({"folder": str(incoming_dir()), "results": process_incoming_once()})
             return
 
-        length = int(self.headers.get("Content-Length", "0"))
         try:
-            data = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+            data = self.read_json_body()
         except json.JSONDecodeError:
             self.send_json({"error": "JSONを読み取れませんでした。"}, 400)
+            return
+
+        if self.path == "/api/config":
+            config = load_config()
+            for key in ["incoming_fax_dir", "ledger_path", "reviewer_default"]:
+                if key in data:
+                    config[key] = data[key]
+            save_config(config)
+            self.send_json(config)
             return
 
         if self.path == "/api/extract":
@@ -537,9 +822,32 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"file": output_path.name, "download_url": f"/download/{output_path.name}"})
             return
 
+        if self.path == "/api/save-review":
+            review = save_pending_review(data, source_name=data.get("source_name", "manual"))
+            self.send_json(review)
+            return
+
+        if self.path == "/api/approve-review":
+            try:
+                result = approve_review(data.get("id", ""), reviewer=data.get("reviewer"), payload=data.get("payload"))
+            except (FileNotFoundError, PermissionError) as exc:
+                self.send_json({"error": str(exc)}, 409)
+                return
+            self.send_json(result)
+            return
+
+        if self.path == "/api/reject-review":
+            try:
+                result = reject_review(data.get("id", ""), reason=data.get("reason", ""))
+            except FileNotFoundError as exc:
+                self.send_json({"error": str(exc)}, 404)
+                return
+            self.send_json(result)
+            return
+
         if self.path == "/api/append-ledger":
             try:
-                result = append_to_pc_excel(data)
+                result = append_to_pc_excel(data, reviewer=data.get("reviewer"))
             except PermissionError as exc:
                 self.send_json({"error": str(exc)}, 409)
                 return
@@ -566,9 +874,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    INCOMING.mkdir(exist_ok=True)
-    OUTPUTS.mkdir(exist_ok=True)
-    PC_EXCEL_DIR.mkdir(exist_ok=True)
+    for folder in [incoming_dir(), OUTPUTS, PENDING, PROCESSED, REJECTED, PC_EXCEL_DIR]:
+        folder.mkdir(exist_ok=True)
     port = int(os.environ.get("PORT") or (sys.argv[1] if len(sys.argv) > 1 else 8765))
     host = os.environ.get("HOST", "0.0.0.0")
     server = ThreadingHTTPServer((host, port), Handler)

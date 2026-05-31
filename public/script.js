@@ -15,7 +15,25 @@ const labels = {
 };
 
 const itemKeys = ["item_code", "item_name", "quantity", "unit", "unit_price", "amount"];
-const uploadExtensions = [".pdf", ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"];
+const serverReadExtensions = [
+  ".pdf",
+  ".jpg",
+  ".jpeg",
+  ".png",
+  ".bmp",
+  ".tif",
+  ".tiff",
+  ".webp",
+  ".heic",
+  ".heif",
+  ".docx",
+  ".xlsx",
+  ".xlsm",
+  ".html",
+  ".htm",
+  ".eml",
+  ".zip",
+];
 
 const sampleText = `資材発注書
 日付: 2026/05/29
@@ -37,19 +55,22 @@ CN-0045 コンクリート釘 10 箱 920 9200
 
 備考: 搬入前に現場担当へ電話してください。`;
 
-let current = {
-  header: {},
-  items: [],
-  confidence: {},
-  raw_text: "",
-};
+let current = { header: {}, items: [], confidence: {}, raw_text: "", source_name: "manual" };
+let currentReviewId = "";
+let selectedSourceName = "manual";
 
 const faxText = document.querySelector("#faxText");
 const headerFields = document.querySelector("#headerFields");
 const itemRows = document.querySelector("#itemRows");
 const status = document.querySelector("#status");
 const exportBtn = document.querySelector("#exportBtn");
-const appendBtn = document.querySelector("#appendBtn");
+const approveBtn = document.querySelector("#approveBtn");
+const rejectBtn = document.querySelector("#rejectBtn");
+const saveReviewBtn = document.querySelector("#saveReviewBtn");
+const refreshReviewsBtn = document.querySelector("#refreshReviewsBtn");
+const autoRunBtn = document.querySelector("#autoRunBtn");
+const reviewList = document.querySelector("#reviewList");
+const reviewerInput = document.querySelector("#reviewerInput");
 const download = document.querySelector("#download");
 
 function setStatus(text, type = "neutral") {
@@ -97,6 +118,19 @@ function renderItems() {
   });
 }
 
+function enableReviewActions(enabled) {
+  exportBtn.disabled = !enabled;
+  approveBtn.disabled = !enabled;
+  rejectBtn.disabled = !currentReviewId;
+  saveReviewBtn.disabled = !enabled;
+}
+
+function renderCurrent() {
+  renderHeader();
+  renderItems();
+  enableReviewActions(true);
+}
+
 async function extract() {
   const text = faxText.value.trim();
   if (!text) {
@@ -112,15 +146,71 @@ async function extract() {
     body: JSON.stringify({ text }),
   });
   current = await response.json();
-  renderHeader();
-  renderItems();
-  exportBtn.disabled = false;
-  appendBtn.disabled = false;
-  setStatus("読み取りました。右側を確認してください", "success");
+  current.source_name = selectedSourceName || "manual";
+  currentReviewId = "";
+  renderCurrent();
+  setStatus("読み取りました。確認してからExcelへ反映できます", "success");
+}
+
+async function saveReview() {
+  setStatus("確認待ちに保存しています...", "busy");
+  const response = await fetch("/api/save-review", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(current),
+  });
+  const review = await response.json();
+  currentReviewId = review.id;
+  rejectBtn.disabled = false;
+  await refreshReviews();
+  setStatus("確認待ちに保存しました", "success");
+}
+
+async function approveCurrent() {
+  setStatus("確認済みとしてExcel台帳へ反映しています...", "busy");
+  const body = currentReviewId
+    ? { id: currentReviewId, reviewer: reviewerInput.value, payload: current }
+    : { ...current, reviewer: reviewerInput.value };
+
+  const response = await fetch(currentReviewId ? "/api/approve-review" : "/api/append-ledger", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const result = await response.json();
+  if (!response.ok || result.error) {
+    setStatus(result.error || "Excel台帳へ反映できませんでした", "warning");
+    return;
+  }
+  download.innerHTML = `${result.rows_added}行を確認済みとしてExcel台帳へ反映しました<br>${result.path}`;
+  currentReviewId = "";
+  rejectBtn.disabled = true;
+  await refreshReviews();
+  setStatus("確認済みとしてExcel台帳へ反映しました", "success");
+}
+
+async function rejectCurrent() {
+  if (!currentReviewId) return;
+  const reason = window.prompt("差し戻し理由を入力してください", "内容確認が必要");
+  if (reason === null) return;
+  const response = await fetch("/api/reject-review", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id: currentReviewId, reason }),
+  });
+  const result = await response.json();
+  if (!response.ok || result.error) {
+    setStatus(result.error || "差し戻しできませんでした", "warning");
+    return;
+  }
+  currentReviewId = "";
+  enableReviewActions(false);
+  await refreshReviews();
+  setStatus("差し戻しにしました", "success");
 }
 
 async function exportExcel() {
-  setStatus("Excelファイルを作っています...", "busy");
+  setStatus("Excelファイルを別保存しています...", "busy");
   const response = await fetch("/api/export", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -131,67 +221,90 @@ async function exportExcel() {
   setStatus("Excelファイルができました", "success");
 }
 
-async function appendLedger() {
-  setStatus("PCのExcel台帳に入力しています...", "busy");
-  const response = await fetch("/api/append-ledger", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(current),
-  });
-  const result = await response.json();
-  if (!response.ok || result.error) {
-    setStatus(result.error || "PCのExcel台帳に入力できませんでした", "warning");
-    return;
-  }
-  download.innerHTML = `${result.rows_added}行をPCのExcel台帳に「社員確認待ち」で入力しました<br>${result.path}`;
-  setStatus("社員確認待ちとしてPCのExcel台帳に入力しました", "success");
-}
-
 async function autoRun() {
-  setStatus("受信FAXフォルダを確認しています...", "busy");
+  setStatus("受信FAXフォルダを確認待ちへ取り込んでいます...", "busy");
   download.innerHTML = "";
   const response = await fetch("/api/auto-run", { method: "POST" });
   const result = await response.json();
   const rows = result.results || [];
+  await refreshReviews();
   if (!rows.length) {
     setStatus("新しいFAXファイルはありません", "neutral");
     download.textContent = `確認したフォルダ: ${result.folder}`;
     return;
   }
   download.innerHTML = rows
-    .map((row) => {
-      if (row.status === "created") {
-        return `<div>${row.source}: <a href="${row.download_url}">${row.file}</a></div>`;
-      }
-      return `<div>${row.source}: ${row.warning || "確認が必要です"}</div>`;
-    })
+    .map((row) => `<div>${row.source}: ${row.status === "pending_review" ? "確認待ちに追加" : row.warning || "確認が必要"}</div>`)
     .join("");
-  setStatus(`${rows.length}件を処理しました`, "success");
+  setStatus(`${rows.length}件を確認待ちへ取り込みました`, "success");
+}
+
+async function refreshReviews() {
+  const response = await fetch("/api/reviews");
+  const result = await response.json();
+  const reviews = result.reviews || [];
+  if (!reviews.length) {
+    reviewList.innerHTML = `<div class="empty-state">確認待ちはありません</div>`;
+    return;
+  }
+  reviewList.innerHTML = reviews
+    .map(
+      (review) => `
+        <button class="review-item" data-id="${review.id}" type="button">
+          <strong>${review.project_name || review.order_no || review.source_name || "確認待ち"}</strong>
+          <span>${review.created_at || ""} / ${review.items_count || 0}明細</span>
+        </button>
+      `
+    )
+    .join("");
+  reviewList.querySelectorAll(".review-item").forEach((button) => {
+    button.addEventListener("click", () => openReview(button.dataset.id));
+  });
+}
+
+async function openReview(id) {
+  setStatus("確認待ちを開いています...", "busy");
+  const response = await fetch(`/api/reviews/${id}`);
+  const review = await response.json();
+  if (!response.ok || review.error) {
+    setStatus(review.error || "確認待ちを開けませんでした", "warning");
+    return;
+  }
+  currentReviewId = review.id;
+  current = review.payload;
+  faxText.value = current.raw_text || "";
+  renderCurrent();
+  setStatus("内容を確認して、OKならExcelへ反映してください", "success");
 }
 
 function shouldUploadToServer(file) {
   const name = file.name.toLowerCase();
-  return uploadExtensions.some((extension) => name.endsWith(extension));
+  return serverReadExtensions.some((extension) => name.endsWith(extension));
 }
 
 document.querySelector("#sampleBtn").addEventListener("click", () => {
   faxText.value = sampleText;
+  currentReviewId = "";
+  selectedSourceName = "sample";
   setStatus("サンプルを入れました。次に「読み取る」を押してください", "success");
 });
 
 document.querySelector("#extractBtn").addEventListener("click", extract);
-appendBtn.addEventListener("click", appendLedger);
+saveReviewBtn.addEventListener("click", saveReview);
+approveBtn.addEventListener("click", approveCurrent);
+rejectBtn.addEventListener("click", rejectCurrent);
 exportBtn.addEventListener("click", exportExcel);
-document.querySelector("#autoRunBtn").addEventListener("click", autoRun);
+autoRunBtn.addEventListener("click", autoRun);
+refreshReviewsBtn.addEventListener("click", refreshReviews);
 
 document.querySelector("#fileInput").addEventListener("change", async (event) => {
-  const [file] = event.target.files;
-  if (!file) return;
+  const files = Array.from(event.target.files || []);
+  if (!files.length) return;
 
-  if (shouldUploadToServer(file)) {
+  if (files.some(shouldUploadToServer)) {
     setStatus("ファイルを読み込んでいます...", "busy");
     const formData = new FormData();
-    formData.append("file", file);
+    files.forEach((file) => formData.append("file", file));
     const response = await fetch("/api/read-file", { method: "POST", body: formData });
     const result = await response.json();
     if (!response.ok || result.error) {
@@ -199,13 +312,16 @@ document.querySelector("#fileInput").addEventListener("change", async (event) =>
       return;
     }
     faxText.value = result.text || "";
+    selectedSourceName = files.map((file) => file.name).join(", ");
     setStatus(result.warning || "読み込みました。次に「読み取る」を押してください", result.warning ? "warning" : "success");
     return;
   }
 
-  faxText.value = await file.text();
+  faxText.value = (await Promise.all(files.map(async (file) => `--- ${file.name} ---\n${await file.text()}`))).join("\n\n");
+  selectedSourceName = files.map((file) => file.name).join(", ");
   setStatus("読み込みました。次に「読み取る」を押してください", "success");
 });
 
 renderHeader();
 renderItems();
+refreshReviews();

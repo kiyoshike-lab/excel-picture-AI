@@ -1,0 +1,4 @@
+{"time": "2026-05-31 02:01:19", "event": "pending_review_created", "id": "20260531_020119_final_test_6c468db7", "source": "final_test.txt"}
+{"time": "2026-05-31 02:01:19", "event": "approved_to_excel", "source": "final_test.txt", "rows_added": 1, "ledger": "C:\\Users\\nlgid\\Documents\\Codex\\2026-05-29\\fax-excel-ai\\pc_excel\\fax_ledger.xlsx"}
+{"time": "2026-05-31 02:01:19", "event": "review_approved", "id": "20260531_020119_final_test_6c468db7", "reviewer": "山田"}
+{"time": "2026-05-31 02:01:31", "event": "pending_review_created", "id": "20260531_020131_auto_pending_test_a25e86c9", "source": "auto_pending_test.txt"}

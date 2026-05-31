@@ -13,30 +13,30 @@
           <span class="mark">FX</span>
           <div>
             <h1>建設FAXかんたんExcel入力</h1>
-            <p>写真・PDF・FAXの内容を読み取り、Excelに入れる形へ整理します</p>
+            <p>FAX・写真・PDFを読み取り、社員が確認したものだけExcel台帳へ入れます</p>
           </div>
         </div>
-        <div class="status-pill" id="status">まずは「サンプルで試す」を押してください</div>
+        <div class="status-pill" id="status">まずはサンプル、または確認待ち一覧を開いてください</div>
       </header>
 
       <section class="workflow" aria-label="使い方">
-        <div class="step active"><span>1</span> 写真・PDFを選ぶ</div>
+        <div class="step active"><span>1</span> 書類を入れる</div>
         <div class="step"><span>2</span> 読み取る</div>
-        <div class="step"><span>3</span> 確認する</div>
-        <div class="step"><span>4</span> Excelに保存</div>
+        <div class="step"><span>3</span> 社員が確認</div>
+        <div class="step"><span>4</span> Excelへ反映</div>
       </section>
 
       <section class="workspace">
         <aside class="input-pane">
           <div class="section-heading">
             <h2>読み取る書類</h2>
-            <p>スマホで撮った写真、PDF、FAXの文字データを入れられます</p>
+            <p>写真、PDF、FAXの文字データを入れられます</p>
           </div>
 
           <label class="drop-zone" for="fileInput">
-            <input id="fileInput" type="file" accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff,.webp,.txt,.csv,.log" />
-            <strong>写真・PDFを選ぶ</strong>
-            <span>ここを押してファイルを選択</span>
+            <input id="fileInput" type="file" multiple accept=".pdf,.jpg,.jpeg,.png,.bmp,.tif,.tiff,.webp,.heic,.heif,.txt,.csv,.tsv,.log,.json,.xml,.md,.rtf,.docx,.xlsx,.xlsm,.html,.htm,.eml,.zip" />
+            <strong>書類ファイルを選ぶ</strong>
+            <span>PDF・写真・Word・Excel・ZIPなど</span>
           </label>
 
           <div class="action-grid">
@@ -44,30 +44,40 @@
             <button id="extractBtn" type="button" class="primary">読み取る</button>
           </div>
 
-          <button id="autoRunBtn" type="button" class="secondary">受信FAXフォルダをまとめて処理</button>
+          <button id="saveReviewBtn" type="button" class="secondary" disabled>確認待ちに保存</button>
+          <button id="autoRunBtn" type="button" class="secondary">受信FAXフォルダを確認待ちへ取り込む</button>
 
           <div class="guide-box">
-            <strong>使い方</strong>
+            <strong>本番の流れ</strong>
             <ol>
-              <li>写真またはPDFを選びます</li>
-              <li>「読み取る」を押します</li>
-              <li>右側の内容を確認します</li>
-              <li>問題なければExcelに保存します</li>
+              <li>FAX PDFが自動で取り込まれます</li>
+              <li>内容は確認待ち一覧に入ります</li>
+              <li>社員が画面で内容を確認します</li>
+              <li>OKしたものだけExcel台帳へ入ります</li>
             </ol>
           </div>
 
           <textarea id="faxText" spellcheck="false" placeholder="読み取った文章がここに入ります。手入力や貼り付けもできます。"></textarea>
+
+          <div class="section-heading compact">
+            <h2>確認待ち一覧</h2>
+            <p>FAXから取り込まれた未確認データです</p>
+          </div>
+          <button id="refreshReviewsBtn" type="button">一覧を更新</button>
+          <div class="review-list" id="reviewList"></div>
         </aside>
 
         <section class="result-pane">
           <div class="toolbar">
             <div class="section-heading">
-              <h2>確認して保存</h2>
-              <p>間違いがあれば、この画面でそのまま直せます</p>
+              <h2>社員確認</h2>
+              <p>間違いがあれば、この画面で直してからExcelへ反映します</p>
             </div>
             <div class="toolbar-actions">
-              <button id="appendBtn" type="button" disabled>PCのExcelに入力</button>
-              <button id="exportBtn" type="button" disabled>Excelに保存</button>
+              <input id="reviewerInput" class="reviewer-input" placeholder="確認者名" />
+              <button id="approveBtn" type="button" disabled>確認してExcelへ反映</button>
+              <button id="rejectBtn" type="button" disabled>差し戻し</button>
+              <button id="exportBtn" type="button" disabled>Excelを別保存</button>
             </div>
           </div>
 
@@ -76,7 +86,7 @@
           <div class="table-header">
             <div>
               <h3>資材の明細</h3>
-              <p>数量・単価・金額は保存前に確認してください</p>
+              <p>数量・単価・金額は反映前に確認してください</p>
             </div>
           </div>
 
