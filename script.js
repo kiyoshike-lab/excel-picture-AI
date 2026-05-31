@@ -120,7 +120,11 @@ function finishProgress(title, detail, percent = 100) {
 
 function hideProgressSoon() {
   window.setTimeout(() => {
-    if (progressPanel) progressPanel.hidden = true;
+    if (!progressPanel) return;
+    progressFill.style.width = "0%";
+    progressTitle.textContent = "待機中";
+    progressTime.textContent = "0秒";
+    progressDetail.textContent = "ファイルを選ぶと進み具合がここに出ます";
   }, 2500);
 }
 
