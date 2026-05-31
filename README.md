@@ -94,7 +94,12 @@ OCRは常に自動最適化します。まず速い `eng` で読み取り、英�
   "ocr_retry_when_empty": true,
   "pdf_text_max_pages": 3,
   "xlsx_max_rows_per_sheet": 120,
+  "docx_max_paragraphs": 80,
+  "docx_max_table_rows": 80,
+  "html_max_chars": 30000,
+  "email_max_parts": 5,
   "zip_max_files": 8,
+  "zip_max_file_bytes": 2000000,
   "text_max_chars": 30000
 }
 ```

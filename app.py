@@ -52,7 +52,12 @@ DEFAULT_CONFIG = {
     "ocr_retry_when_empty": True,
     "pdf_text_max_pages": 3,
     "xlsx_max_rows_per_sheet": 120,
+    "docx_max_paragraphs": 80,
+    "docx_max_table_rows": 80,
+    "html_max_chars": 30000,
+    "email_max_parts": 5,
     "zip_max_files": 8,
+    "zip_max_file_bytes": 2000000,
     "text_max_chars": 30000,
 }
 
@@ -480,13 +485,23 @@ def read_docx_text(file_bytes):
         temp.write(file_bytes)
         temp_path = temp.name
     try:
+        config = load_config()
+        max_paragraphs = int(config.get("docx_max_paragraphs", 80))
+        max_table_rows = int(config.get("docx_max_table_rows", 80))
         document = Document(temp_path)
-        parts = [paragraph.text for paragraph in document.paragraphs if paragraph.text.strip()]
+        parts = []
+        for paragraph in document.paragraphs[:max_paragraphs]:
+            if paragraph.text.strip():
+                parts.append(paragraph.text)
+        table_rows = 0
         for table in document.tables:
             for row in table.rows:
+                if table_rows >= max_table_rows:
+                    return "\n".join(parts).strip()
                 values = [cell.text.strip() for cell in row.cells if cell.text.strip()]
                 if values:
                     parts.append(" ".join(values))
+                    table_rows += 1
         return "\n".join(parts).strip()
     finally:
         Path(temp_path).unlink(missing_ok=True)
@@ -518,18 +533,23 @@ def read_xlsx_text(file_bytes):
 
 
 def read_html_text(file_bytes):
+    max_chars = int(load_config().get("html_max_chars", 30000))
     parser = TextOnlyHTMLParser()
-    parser.feed(file_bytes.decode("utf-8", errors="ignore"))
-    return "\n".join(parser.parts).strip()
+    parser.feed(file_bytes[: max_chars * 4].decode("utf-8", errors="ignore"))
+    return "\n".join(parser.parts).strip()[:max_chars]
 
 
 def read_email_text(file_bytes):
     message = email.message_from_bytes(file_bytes)
     parts = []
+    max_parts = int(load_config().get("email_max_parts", 5))
     subject = message.get("subject", "")
     if subject:
         parts.append(f"件名: {subject}")
+    processed = 0
     for part in message.walk():
+        if processed >= max_parts:
+            break
         content_type = part.get_content_type()
         if content_type not in {"text/plain", "text/html"}:
             continue
@@ -542,13 +562,16 @@ def read_email_text(file_bytes):
             text = read_html_text(text.encode("utf-8"))
         if text.strip():
             parts.append(text.strip())
+            processed += 1
     return "\n\n".join(parts).strip()
 
 
 def read_archive_text(file_bytes):
     parts = []
     warnings = []
-    max_files = int(load_config().get("zip_max_files", 8))
+    config = load_config()
+    max_files = int(config.get("zip_max_files", 8))
+    max_file_bytes = int(config.get("zip_max_file_bytes", 2000000))
     with zipfile.ZipFile(io.BytesIO(file_bytes)) as archive:
         processed = 0
         for info in archive.infolist():
@@ -559,6 +582,9 @@ def read_archive_text(file_bytes):
                 break
             inner_name = info.filename
             inner_suffix = Path(inner_name).suffix.lower()
+            if info.file_size > max_file_bytes:
+                warnings.append(f"{inner_name}: skipped because it is larger than {max_file_bytes} bytes")
+                continue
             if inner_suffix in ARCHIVE_EXTENSIONS:
                 warnings.append(f"{inner_name}: ZIPの中のZIPは読み飛ばしました。")
                 continue
@@ -598,7 +624,7 @@ def read_file_text(filename, file_bytes):
         return read_archive_text(file_bytes)
     if suffix in TEXT_EXTENSIONS:
         max_chars = int(load_config().get("text_max_chars", 30000))
-        text = file_bytes.decode("utf-8-sig", errors="ignore").strip()
+        text = file_bytes[: max_chars * 4].decode("utf-8-sig", errors="ignore").strip()
         warning = "" if len(text) <= max_chars else f"テキストは先頭{max_chars}文字まで読み込みました。"
         return text[:max_chars], warning
     return "", f"{suffix or '拡張子なし'} は未対応です。PDF、画像、Word、Excel、ZIP、テキストに変換してください。"
@@ -977,7 +1003,12 @@ class Handler(BaseHTTPRequestHandler):
                 "ocr_retry_when_empty",
                 "pdf_text_max_pages",
                 "xlsx_max_rows_per_sheet",
+                "docx_max_paragraphs",
+                "docx_max_table_rows",
+                "html_max_chars",
+                "email_max_parts",
                 "zip_max_files",
+                "zip_max_file_bytes",
                 "text_max_chars",
             ]:
                 if key in data:
