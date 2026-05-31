@@ -40,13 +40,13 @@ DEFAULT_CONFIG = {
     "ledger_path": str(PC_EXCEL_DIR / "fax_ledger.xlsx"),
     "reviewer_default": "社員確認",
     "auto_process_to_review": True,
-    "ocr_min_chars": 20,
+    "ocr_min_chars": 8,
     "ocr_psm": "6",
-    "ocr_timeout_seconds": 10,
+    "ocr_timeout_seconds": 8,
     "ocr_preprocess": True,
-    "ocr_pdf_dpi": 150,
-    "ocr_target_long_side": 1200,
-    "ocr_max_pages": 2,
+    "ocr_pdf_dpi": 140,
+    "ocr_target_long_side": 1100,
+    "ocr_max_pages": 1,
 }
 
 
@@ -368,18 +368,16 @@ def run_fast_ocr(tesseract, image_path, output_base):
     config = load_config()
     min_chars = int(config.get("ocr_min_chars", 12))
 
-    # Always optimize automatically: fast English first, then Japanese, then combined OCR.
-    # This keeps English-only forms fast while still recovering Japanese-heavy FAX text.
+    # Keep production scans fast: one Japanese OCR pass first. Japanese traineddata also
+    # handles many alphanumeric fields, so this avoids doing English + Japanese twice.
     candidates = []
-    text, warning, elapsed_ms = run_tesseract(tesseract, image_path, output_base, "eng")
-    write_history("ocr_attempt", {"lang": "eng", "elapsed_ms": elapsed_ms, "chars": meaningful_text_length(text)})
-    candidates.append((text, warning, "eng"))
-    if english_signal_count(text) >= min_chars and japanese_char_count(text) == 0:
-        return text, warning
-    if looks_like_complete_business_text(text):
+    text, warning, elapsed_ms = run_tesseract(tesseract, image_path, output_base, "jpn")
+    write_history("ocr_attempt", {"lang": "jpn", "elapsed_ms": elapsed_ms, "chars": meaningful_text_length(text)})
+    candidates.append((text, warning, "jpn"))
+    if meaningful_text_length(text) >= min_chars:
         return text, warning
 
-    for lang in ["jpn", "jpn+eng"]:
+    for lang in ["jpn+eng"]:
         next_text, next_warning, next_elapsed_ms = run_tesseract(
             tesseract,
             image_path,
