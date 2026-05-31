@@ -76,10 +76,52 @@ const autoRunBtn = document.querySelector("#autoRunBtn");
 const reviewList = document.querySelector("#reviewList");
 const reviewerInput = document.querySelector("#reviewerInput");
 const download = document.querySelector("#download");
+const progressPanel = document.querySelector("#progressPanel");
+const progressTitle = document.querySelector("#progressTitle");
+const progressTime = document.querySelector("#progressTime");
+const progressFill = document.querySelector("#progressFill");
+const progressDetail = document.querySelector("#progressDetail");
+let progressTimer = null;
+let progressStartedAt = 0;
 
 function setStatus(text, type = "neutral") {
   status.textContent = text;
   status.dataset.type = type;
+}
+
+function updateProgress(percent, title, detail) {
+  if (!progressPanel) return;
+  progressPanel.hidden = false;
+  progressFill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+  if (title) progressTitle.textContent = title;
+  if (detail) progressDetail.textContent = detail;
+}
+
+function startProgress(title, detail) {
+  progressStartedAt = Date.now();
+  updateProgress(3, title, detail);
+  clearInterval(progressTimer);
+  progressTimer = setInterval(() => {
+    const elapsed = Math.floor((Date.now() - progressStartedAt) / 1000);
+    progressTime.textContent = `${elapsed}秒`;
+    if (elapsed >= 20) {
+      progressDetail.textContent = "20秒を超えています。ファイルが重いか、サーバーが混み合っています。";
+    }
+  }, 250);
+}
+
+function finishProgress(title, detail, percent = 100) {
+  updateProgress(percent, title, detail);
+  clearInterval(progressTimer);
+  progressTimer = null;
+  const elapsed = Math.floor((Date.now() - progressStartedAt) / 1000);
+  progressTime.textContent = `${elapsed}秒`;
+}
+
+function hideProgressSoon() {
+  window.setTimeout(() => {
+    if (progressPanel) progressPanel.hidden = true;
+  }, 2500);
 }
 
 function renderHeader() {
@@ -142,6 +184,7 @@ async function extract() {
     return;
   }
 
+  startProgress("項目を整理中", "読み取った文字から日付・会社名・品名を探しています");
   setStatus("内容を読み取っています...", "busy");
   download.innerHTML = "";
   const response = await fetch("/api/extract", {
@@ -153,6 +196,8 @@ async function extract() {
   current.source_name = selectedSourceName || "manual";
   currentReviewId = "";
   renderCurrent();
+  finishProgress("整理完了", "社員確認に進めます");
+  hideProgressSoon();
   setStatus("読み取りました。確認してからExcelへ反映できます", "success");
 }
 
@@ -301,6 +346,42 @@ async function fetchWithTimeout(url, options, timeoutMs = uploadTimeoutMs) {
   }
 }
 
+function uploadReadFile(formData, onUploadProgress) {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    const timeout = setTimeout(() => {
+      request.abort();
+      reject(new Error("timeout"));
+    }, uploadTimeoutMs);
+
+    request.open("POST", "/api/read-file");
+    request.upload.onprogress = (event) => {
+      if (event.lengthComputable && onUploadProgress) {
+        onUploadProgress(Math.round((event.loaded / event.total) * 100));
+      }
+    };
+    request.onload = () => {
+      clearTimeout(timeout);
+      let result = {};
+      try {
+        result = JSON.parse(request.responseText || "{}");
+      } catch (_) {
+        result = { error: "読み取り結果を確認できませんでした。" };
+      }
+      resolve({ ok: request.status >= 200 && request.status < 300, status: request.status, result });
+    };
+    request.onerror = () => {
+      clearTimeout(timeout);
+      reject(new Error("network"));
+    };
+    request.onabort = () => {
+      clearTimeout(timeout);
+      reject(new Error("aborted"));
+    };
+    request.send(formData);
+  });
+}
+
 function loadImageForCompression(file) {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
@@ -362,19 +443,26 @@ document.querySelector("#fileInput").addEventListener("change", async (event) =>
   if (!files.length) return;
 
   if (files.some(shouldUploadToServer)) {
+    startProgress("ファイル準備中", "画像を軽くして、送信の準備をしています");
     setStatus("ファイルを読み込んでいます...", "busy");
     const formData = new FormData();
     const uploadFiles = await Promise.all(files.map(compressImageBeforeUpload));
     uploadFiles.forEach((file) => formData.append("file", file));
-    let response;
+    updateProgress(18, "アップロード中", "サーバーへ送っています");
+    let uploadResult;
     try {
-      response = await fetchWithTimeout("/api/read-file", { method: "POST", body: formData });
+      uploadResult = await uploadReadFile(formData, (percent) => {
+        updateProgress(20 + percent * 0.35, "アップロード中", `${percent}% 送信しました`);
+      });
     } catch (error) {
+      finishProgress("中断しました", "25秒で止めました。ファイルを小さくして試してください", 100);
       setStatus("25秒で止めました。ファイルが大きすぎるか、古いサイトが動いています。PDFは1ページ、画像は小さめで試してください。", "warning");
       return;
     }
-    const result = await response.json();
-    if (!response.ok || result.error) {
+    updateProgress(70, "文字認識中", "OCRで文字を読んでいます");
+    const { ok, result } = uploadResult;
+    if (!ok || result.error) {
+      finishProgress("読み取り停止", result.error || "ファイルを読み込めませんでした", 100);
       setStatus(result.error || "ファイルを読み込めませんでした", "warning");
       return;
     }
@@ -382,12 +470,17 @@ document.querySelector("#fileInput").addEventListener("change", async (event) =>
     selectedSourceName = files.map((file) => file.name).join(", ");
     const versionText = result.version ? ` / ${result.version}` : "";
     const elapsedText = result.elapsed_seconds ? ` / ${result.elapsed_seconds}秒` : "";
+    finishProgress("文字読み取り完了", `次に「読み取る」を押してください${elapsedText}${versionText}`, 100);
+    hideProgressSoon();
     setStatus(result.warning || `読み込み完了${elapsedText}${versionText}`, result.warning ? "warning" : "success");
     return;
   }
 
+  startProgress("テキスト読み込み中", "選んだファイルの文字を画面に入れています");
   faxText.value = (await Promise.all(files.map(async (file) => `--- ${file.name} ---\n${await file.text()}`))).join("\n\n");
   selectedSourceName = files.map((file) => file.name).join(", ");
+  finishProgress("読み込み完了", "次に「読み取る」を押してください");
+  hideProgressSoon();
   setStatus("読み込みました。次に「読み取る」を押してください", "success");
 });
 
