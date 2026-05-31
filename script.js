@@ -37,6 +37,7 @@ const serverReadExtensions = [
 const browserCompressExtensions = [".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"];
 const browserImageMaxSide = 1200;
 const browserImageQuality = 0.78;
+const uploadTimeoutMs = 25000;
 
 const sampleText = `資材発注書
 日付: 2026/05/29
@@ -290,6 +291,16 @@ function shouldCompressBeforeUpload(file) {
   return browserCompressExtensions.some((extension) => name.endsWith(extension));
 }
 
+async function fetchWithTimeout(url, options, timeoutMs = uploadTimeoutMs) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function loadImageForCompression(file) {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
@@ -355,7 +366,13 @@ document.querySelector("#fileInput").addEventListener("change", async (event) =>
     const formData = new FormData();
     const uploadFiles = await Promise.all(files.map(compressImageBeforeUpload));
     uploadFiles.forEach((file) => formData.append("file", file));
-    const response = await fetch("/api/read-file", { method: "POST", body: formData });
+    let response;
+    try {
+      response = await fetchWithTimeout("/api/read-file", { method: "POST", body: formData });
+    } catch (error) {
+      setStatus("25秒で止めました。ファイルが大きすぎるか、古いサイトが動いています。PDFは1ページ、画像は小さめで試してください。", "warning");
+      return;
+    }
     const result = await response.json();
     if (!response.ok || result.error) {
       setStatus(result.error || "ファイルを読み込めませんでした", "warning");

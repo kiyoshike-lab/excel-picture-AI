@@ -57,6 +57,8 @@ DEFAULT_CONFIG = {
     "ocr_retry_when_empty": True,
     "request_timeout_seconds": 19,
     "max_upload_files": 1,
+    "max_upload_bytes": 8000000,
+    "max_single_file_bytes": 8000000,
     "pdf_text_max_pages": 2,
     "xlsx_max_rows_per_sheet": 100,
     "docx_max_paragraphs": 70,
@@ -620,6 +622,9 @@ def read_archive_text(file_bytes):
 
 def read_file_text(filename, file_bytes):
     suffix = Path(filename).suffix.lower()
+    max_single_file_bytes = int(load_config().get("max_single_file_bytes", 8000000))
+    if len(file_bytes) > max_single_file_bytes:
+        return "", f"20秒以内にするため、{max_single_file_bytes // 1000000}MBを超えるファイルは読み取りを止めました。"
     if suffix in PDF_EXTENSIONS:
         text = read_pdf_text(file_bytes)
         warning = "" if text else "PDF内に文字情報が見つかりませんでした。スキャンPDFの場合はOCRの追加が必要です。"
@@ -979,6 +984,17 @@ class Handler(BaseHTTPRequestHandler):
             config = load_config()
             request_timeout = float(config.get("request_timeout_seconds", 9))
             max_upload_files = int(config.get("max_upload_files", 1))
+            max_upload_bytes = int(config.get("max_upload_bytes", 8000000))
+            content_length = int(self.headers.get("Content-Length", "0"))
+            if content_length > max_upload_bytes:
+                self.send_json(
+                    {
+                        "error": f"20秒以内にするため、{max_upload_bytes // 1000000}MBを超えるアップロードは止めました。画像は小さくするかPDFを1ページにしてください。",
+                        "version": APP_VERSION,
+                    },
+                    413,
+                )
+                return
             file_items = self.multipart_files()
             if not file_items:
                 self.send_json({"error": "ファイルを読み取れませんでした。"}, 400)
@@ -1044,6 +1060,8 @@ class Handler(BaseHTTPRequestHandler):
                 "ocr_retry_when_empty",
                 "request_timeout_seconds",
                 "max_upload_files",
+                "max_upload_bytes",
+                "max_single_file_bytes",
                 "pdf_text_max_pages",
                 "xlsx_max_rows_per_sheet",
                 "docx_max_paragraphs",

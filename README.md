@@ -97,6 +97,8 @@ OCRは常に自動最適化します。まず速い `eng` で読み取り、英�
   "ocr_retry_when_empty": true,
   "request_timeout_seconds": 19,
   "max_upload_files": 1,
+  "max_upload_bytes": 8000000,
+  "max_single_file_bytes": 8000000,
   "pdf_text_max_pages": 2,
   "xlsx_max_rows_per_sheet": 100,
   "docx_max_paragraphs": 70,
