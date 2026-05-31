@@ -35,8 +35,8 @@ const serverReadExtensions = [
   ".zip",
 ];
 const browserCompressExtensions = [".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"];
-const browserImageMaxSide = 640;
-const browserImageQuality = 0.55;
+const browserImageMaxSide = 1200;
+const browserImageQuality = 0.78;
 
 const sampleText = `資材発注書
 日付: 2026/05/29
@@ -363,7 +363,9 @@ document.querySelector("#fileInput").addEventListener("change", async (event) =>
     }
     faxText.value = result.text || "";
     selectedSourceName = files.map((file) => file.name).join(", ");
-    setStatus(result.warning || "読み込みました。次に「読み取る」を押してください", result.warning ? "warning" : "success");
+    const versionText = result.version ? ` / ${result.version}` : "";
+    const elapsedText = result.elapsed_seconds ? ` / ${result.elapsed_seconds}秒` : "";
+    setStatus(result.warning || `読み込み完了${elapsedText}${versionText}`, result.warning ? "warning" : "success");
     return;
   }
 

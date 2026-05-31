@@ -35,6 +35,7 @@ REJECTED = ROOT / "rejected_fax"
 PC_EXCEL_DIR = ROOT / "pc_excel"
 CONFIG_PATH = ROOT / "config.json"
 HISTORY_PATH = ROOT / "history.jsonl"
+APP_VERSION = "20sec-accuracy-20260531-01"
 
 DEFAULT_CONFIG = {
     "incoming_fax_dir": str(ROOT / "incoming_fax"),
@@ -43,28 +44,28 @@ DEFAULT_CONFIG = {
     "auto_process_to_review": True,
     "ocr_min_chars": 8,
     "ocr_psm": "6",
-    "ocr_timeout_seconds": 2,
+    "ocr_timeout_seconds": 8,
     "ocr_preprocess": True,
-    "ocr_preprocess_mode": "resize",
+    "ocr_preprocess_mode": "clean",
     "ocr_processed_format": "jpeg",
-    "ocr_jpeg_quality": 60,
-    "ocr_pdf_dpi": 72,
+    "ocr_jpeg_quality": 82,
+    "ocr_pdf_dpi": 140,
     "ocr_pdf_image_format": "jpeg",
-    "ocr_target_long_side": 560,
-    "ocr_min_long_side": 420,
+    "ocr_target_long_side": 1100,
+    "ocr_min_long_side": 800,
     "ocr_max_pages": 1,
-    "ocr_retry_when_empty": False,
-    "request_timeout_seconds": 9,
+    "ocr_retry_when_empty": True,
+    "request_timeout_seconds": 19,
     "max_upload_files": 1,
-    "pdf_text_max_pages": 1,
-    "xlsx_max_rows_per_sheet": 60,
-    "docx_max_paragraphs": 40,
-    "docx_max_table_rows": 40,
-    "html_max_chars": 12000,
-    "email_max_parts": 2,
-    "zip_max_files": 3,
-    "zip_max_file_bytes": 800000,
-    "text_max_chars": 12000,
+    "pdf_text_max_pages": 2,
+    "xlsx_max_rows_per_sheet": 100,
+    "docx_max_paragraphs": 70,
+    "docx_max_table_rows": 70,
+    "html_max_chars": 24000,
+    "email_max_parts": 4,
+    "zip_max_files": 5,
+    "zip_max_file_bytes": 1500000,
+    "text_max_chars": 24000,
 }
 
 
@@ -921,7 +922,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path == "/health":
-            self.send_json({"status": "ok"})
+            self.send_json({"status": "ok", "version": APP_VERSION, "config": load_config()})
             return
         if parsed.path == "/api/config":
             config = load_config()
@@ -1001,7 +1002,15 @@ class Handler(BaseHTTPRequestHandler):
                 if time.monotonic() - started > request_timeout:
                     warnings.append("10秒以内にするため、ここで読み取りを終了しました。")
                     break
-            self.send_json({"text": "\n\n".join(parts).strip(), "warning": " / ".join(warnings)})
+            self.send_json(
+                {
+                    "text": "\n\n".join(parts).strip(),
+                    "warning": " / ".join(warnings),
+                    "elapsed_seconds": round(time.monotonic() - started, 2),
+                    "version": APP_VERSION,
+                    "mode": "20秒以内・精度優先",
+                }
+            )
             return
 
         if self.path == "/api/auto-run":
