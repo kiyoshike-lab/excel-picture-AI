@@ -20,6 +20,7 @@ from html.parser import HTMLParser
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from pypdf import PdfReader
 from docx import Document
 
@@ -39,6 +40,10 @@ DEFAULT_CONFIG = {
     "ledger_path": str(PC_EXCEL_DIR / "fax_ledger.xlsx"),
     "reviewer_default": "社員確認",
     "auto_process_to_review": True,
+    "ocr_min_chars": 12,
+    "ocr_psm": "6",
+    "ocr_timeout_seconds": 45,
+    "ocr_preprocess": True,
 }
 
 
@@ -130,9 +135,16 @@ def normalize_text(text):
         "　": " ",
         "㈱": "株式会社",
         "（株）": "株式会社",
+        "／": "/",
+        "－": "-",
+        "ー": "-",
+        "―": "-",
+        "：": ":",
+        "，": ",",
     }
     for before, after in replacements.items():
         text = text.replace(before, after)
+    text = text.translate(str.maketrans("０１２３４５６７８９ＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰＱＲＳＴＵＶＷＸＹＺａｂｃｄｅｆｇｈｉｊｋｌｍｎｏｐｑｒｓｔｕｖｗｘｙｚ", "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"))
     return re.sub(r"[ \t]+", " ", text).strip()
 
 
@@ -176,7 +188,7 @@ def parse_items(text):
     items = []
     line_patterns = [
         re.compile(
-            r"(?P<code>[A-Z0-9][A-Z0-9\-]{2,})\s+"
+            r"(?P<code>[A-Z0-9][A-Z0-9\-_./]{1,})\s+"
             r"(?P<name>.+?)\s+"
             r"(?P<qty>\d+(?:\.\d+)?)\s*(?P<unit>個|枚|箱|本|台|kg|t|式|袋|缶|束|セット|m|ｍ|m2|m3|㎡|㎥)?\s+"
             r"(?P<price>[\d,]+)?\s+"
@@ -184,11 +196,18 @@ def parse_items(text):
             re.IGNORECASE,
         ),
         re.compile(
-            r"品番[:： ]?(?P<code>[A-Z0-9\-]+).*?"
-            r"商品名[:： ]?(?P<name>.+?)\s+"
-            r"数量[:： ]?(?P<qty>\d+(?:\.\d+)?).*?"
-            r"(?:単価[:： ]?(?P<price>[\d,]+))?.*?"
-            r"(?:金額[:： ]?(?P<amount>[\d,]+))?",
+            r"(?:品番|型番|コード)[: ]?(?P<code>[A-Z0-9\-_.\/]+).*?"
+            r"(?:商品名|品名|資材名|名称)[: ]?(?P<name>.+?)\s+"
+            r"(?:数量|数|個数)[: ]?(?P<qty>\d+(?:\.\d+)?).*?"
+            r"(?:単価[: ]?(?P<price>[\d,]+))?.*?"
+            r"(?:(?:金額|小計)[: ]?(?P<amount>[\d,]+))?",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"(?P<name>.+?)\s+"
+            r"(?P<qty>\d+(?:\.\d+)?)\s*(?P<unit>個|枚|箱|本|台|kg|t|式|袋|缶|束|セット|m|ｍ|m2|m3|㎡|㎥)\s+"
+            r"(?P<price>[\d,]+)?\s+"
+            r"(?P<amount>[\d,]+)?$",
             re.IGNORECASE,
         ),
     ]
@@ -229,28 +248,28 @@ def parse_items(text):
 def extract_fax(text):
     text = normalize_text(text)
     header = {
-        "received_date": normalize_date(first_match([r"(?:受信日|日付|発注日)[:： ]*([0-9./年月日-]+)"], text)),
+        "received_date": normalize_date(first_match([r"(?:受信日|受付日|日付|発注日|作成日)[: ]*([0-9./年月日-]+)"], text)),
         "document_type": first_match(
             [r"(見積依頼書|発注書|注文書|納品依頼書|資材依頼書|作業依頼書)", r"(?:書類種別|帳票種別)[:： ]*(.+)"],
             text,
         ),
         "sender_company": first_match(
             [
-                r"(?:送信元|差出人|From|発注元)[:： ]*(.+)",
+                r"(?:送信元|差出人|From|発注元|依頼元|会社名)[: ]*(.+)",
                 r"(.+?(?:株式会社|有限会社|合同会社|商事|工業|産業|物流|建設|工務店|土木|設備))\s*(?:御中|様)?$",
             ],
             text,
         ),
-        "recipient_company": first_match([r"(?:宛先|To|納入先)[:： ]*(.+)"], text),
-        "fax_no": first_match([r"(?:FAX|Fax|ファックス)[:： ]*([0-9\-\(\) ]{8,})"], text),
-        "order_no": first_match([r"(?:注文番号|発注番号|注文No\.?|Order No\.?)[:： ]*([A-Z0-9\-]+)"], text),
-        "project_name": first_match([r"(?:工事名|案件名|件名)[:： ]*(.+)"], text),
-        "site_name": first_match([r"(?:現場名|現場)[:： ]*(.+)"], text),
-        "delivery_place": first_match([r"(?:納入場所|搬入場所|納品場所|現場住所|住所)[:： ]*(.+)"], text),
-        "delivery_date": normalize_date(first_match([r"(?:納期|希望納期|納入日|搬入日|納品日)[:： ]*([0-9./年月日-]+)"], text)),
-        "desired_time": first_match([r"(?:希望時間|搬入時間|納品時間|時間指定)[:： ]*(.+)"], text),
-        "person_in_charge": first_match([r"(?:担当者|担当)[:： ]*(.+)"], text),
-        "notes": first_match([r"(?:備考|摘要|連絡事項)[:： ]*(.+)"], text),
+        "recipient_company": first_match([r"(?:宛先|To|納入先|提出先)[: ]*(.+)"], text),
+        "fax_no": first_match([r"(?:FAX|Fax|ファックス)[: ]*([0-9\-\(\) ]{8,})"], text),
+        "order_no": first_match([r"(?:注文番号|発注番号|注文No\.?|Order No\.?|No\.?)[: ]*([A-Z0-9\-_.\/]+)"], text),
+        "project_name": first_match([r"(?:工事名|案件名|件名|物件名|プロジェクト名)[: ]*(.+)"], text),
+        "site_name": first_match([r"(?:現場名|現場|作業所名|作業所)[: ]*(.+)"], text),
+        "delivery_place": first_match([r"(?:納入場所|搬入場所|納品場所|現場住所|住所|配送先|届け先)[: ]*(.+)"], text),
+        "delivery_date": normalize_date(first_match([r"(?:納期|希望納期|納入日|搬入日|納品日|配達日|希望日)[: ]*([0-9./年月日-]+)"], text)),
+        "desired_time": first_match([r"(?:希望時間|搬入時間|納品時間|時間指定|時間帯)[: ]*(.+)"], text),
+        "person_in_charge": first_match([r"(?:担当者|担当|現場担当|連絡先担当)[: ]*(.+)"], text),
+        "notes": first_match([r"(?:備考|摘要|連絡事項|注意事項|コメント)[: ]*(.+)"], text),
     }
     confidence = {key: 0.92 if value else 0.35 for key, value in header.items()}
     return {"header": header, "items": parse_items(text), "confidence": confidence, "raw_text": text}
@@ -284,21 +303,101 @@ def read_scanned_pdf_text(file_bytes):
 
         pages = []
         for index, image_path in enumerate(sorted(temp.glob("page-*.png")), start=1):
-            output_base = temp / f"ocr_{index}"
-            result = subprocess.run(
-                [tesseract, str(image_path), str(output_base), "-l", "jpn+eng", "--psm", "6"],
-                capture_output=True,
-                text=True,
-                timeout=90,
-            )
-            if result.returncode != 0:
-                continue
-            text_path = output_base.with_suffix(".txt")
-            if text_path.exists():
-                page_text = text_path.read_text(encoding="utf-8", errors="ignore").strip()
-                if page_text:
-                    pages.append(f"--- OCR PDF {index}ページ ---\n{page_text}")
+            ocr_image = preprocess_image_file(image_path) if load_config().get("ocr_preprocess", True) else image_path
+            page_text, _ = run_fast_ocr(tesseract, ocr_image, temp / f"ocr_{index}")
+            if page_text:
+                pages.append(f"--- OCR PDF {index}ページ ---\n{page_text}")
         return "\n\n".join(pages).strip()
+
+
+def meaningful_text_length(text):
+    return len(re.sub(r"\s+", "", text or ""))
+
+
+def japanese_char_count(text):
+    return len(re.findall(r"[\u3040-\u30ff\u3400-\u9fff]", text or ""))
+
+
+def english_signal_count(text):
+    return len(re.findall(r"[A-Za-z0-9]", text or ""))
+
+
+def run_tesseract(tesseract, image_path, output_base, lang):
+    config = load_config()
+    command = [
+        tesseract,
+        str(image_path),
+        str(output_base),
+        "-l",
+        lang,
+        "--oem",
+        "1",
+        "--psm",
+        str(config.get("ocr_psm", "6")),
+    ]
+    started = datetime.now()
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=int(config.get("ocr_timeout_seconds", 45)),
+    )
+    elapsed_ms = int((datetime.now() - started).total_seconds() * 1000)
+    if result.returncode != 0:
+        return "", f"{lang}: {result.stderr.strip() or result.stdout.strip()}", elapsed_ms
+    text_path = output_base.with_suffix(".txt")
+    text = text_path.read_text(encoding="utf-8", errors="ignore") if text_path.exists() else ""
+    return text.strip(), "", elapsed_ms
+
+
+def run_fast_ocr(tesseract, image_path, output_base):
+    config = load_config()
+    min_chars = int(config.get("ocr_min_chars", 12))
+
+    # Always optimize automatically: fast English first, then Japanese, then combined OCR.
+    # This keeps English-only forms fast while still recovering Japanese-heavy FAX text.
+    candidates = []
+    text, warning, elapsed_ms = run_tesseract(tesseract, image_path, output_base, "eng")
+    write_history("ocr_attempt", {"lang": "eng", "elapsed_ms": elapsed_ms, "chars": meaningful_text_length(text)})
+    candidates.append((text, warning, "eng"))
+    if english_signal_count(text) >= min_chars and japanese_char_count(text) == 0:
+        return text, warning
+
+    for lang in ["jpn", "jpn+eng"]:
+        next_text, next_warning, next_elapsed_ms = run_tesseract(
+            tesseract,
+            image_path,
+            output_base.with_name(output_base.name + "_" + re.sub(r"[^A-Za-z0-9]+", "_", lang)),
+            lang,
+        )
+        write_history("ocr_attempt", {"lang": lang, "elapsed_ms": next_elapsed_ms, "chars": meaningful_text_length(next_text)})
+        candidates.append((next_text, next_warning, lang))
+        if meaningful_text_length(next_text) >= min_chars and japanese_char_count(next_text) > 0:
+            break
+
+    best_text, best_warning, _ = max(candidates, key=lambda item: meaningful_text_length(item[0]))
+    return best_text, best_warning
+
+
+def preprocess_image_file(image_path):
+    try:
+        image = Image.open(image_path)
+        image = ImageOps.exif_transpose(image)
+        image = image.convert("L")
+        width, height = image.size
+        if max(width, height) < 1800:
+            scale = 1800 / max(width, height)
+            image = image.resize((int(width * scale), int(height * scale)), Image.Resampling.LANCZOS)
+        image = ImageOps.autocontrast(image)
+        image = ImageEnhance.Contrast(image).enhance(1.6)
+        image = image.filter(ImageFilter.SHARPEN)
+        image = image.point(lambda pixel: 255 if pixel > 170 else 0)
+        processed = image_path.with_name(image_path.stem + "_ocr.png")
+        image.save(processed)
+        return processed
+    except Exception as exc:
+        write_history("image_preprocess_failed", {"path": str(image_path), "error": str(exc)})
+        return image_path
 
 
 def read_image_text(file_bytes, suffix):
@@ -313,12 +412,10 @@ def read_image_text(file_bytes, suffix):
         image_path = temp / f"input{suffix}"
         output_base = temp / "ocr"
         image_path.write_bytes(file_bytes)
-        command = [tesseract, str(image_path), str(output_base), "-l", "jpn+eng", "--psm", "6"]
-        result = subprocess.run(command, capture_output=True, text=True, timeout=60)
-        if result.returncode != 0:
-            return "", f"OCRに失敗しました: {result.stderr.strip() or result.stdout.strip()}"
-        text_path = output_base.with_suffix(".txt")
-        text = text_path.read_text(encoding="utf-8", errors="ignore") if text_path.exists() else ""
+        ocr_image = preprocess_image_file(image_path) if load_config().get("ocr_preprocess", True) else image_path
+        text, warning = run_fast_ocr(tesseract, ocr_image, output_base)
+        if warning and not text:
+            return "", f"OCRに失敗しました: {warning}"
         return text.strip(), "" if text.strip() else "画像から文字を読み取れませんでした。写真の明るさや傾きを確認してください。"
 
 
@@ -806,7 +903,15 @@ class Handler(BaseHTTPRequestHandler):
 
         if self.path == "/api/config":
             config = load_config()
-            for key in ["incoming_fax_dir", "ledger_path", "reviewer_default"]:
+            for key in [
+                "incoming_fax_dir",
+                "ledger_path",
+                "reviewer_default",
+                "ocr_min_chars",
+                "ocr_psm",
+                "ocr_timeout_seconds",
+                "ocr_preprocess",
+            ]:
                 if key in data:
                     config[key] = data[key]
             save_config(config)
