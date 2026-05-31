@@ -84,13 +84,22 @@ OCRは常に自動最適化します。まず速い `eng` で読み取り、英�
 {
   "ocr_min_chars": 8,
   "ocr_psm": "6",
-  "ocr_timeout_seconds": 8,
+  "ocr_timeout_seconds": 5,
   "ocr_preprocess": true,
-  "ocr_pdf_dpi": 140,
-  "ocr_target_long_side": 1100,
-  "ocr_max_pages": 1
+  "ocr_pdf_dpi": 110,
+  "ocr_pdf_image_format": "jpeg",
+  "ocr_target_long_side": 900,
+  "ocr_min_long_side": 650,
+  "ocr_max_pages": 1,
+  "ocr_retry_when_empty": true,
+  "pdf_text_max_pages": 3,
+  "xlsx_max_rows_per_sheet": 120,
+  "zip_max_files": 8,
+  "text_max_chars": 30000
 }
 ```
+
+読み込みを速くするため、PDFは先頭3ページ、Excelは各シート先頭120行、ZIPは先頭8ファイル、テキストは先頭30,000文字を標準で読みます。必要に応じて `config.json` で増やせます。
 
 読み取り時間を短くするため、スキャンPDFは標準で先頭1ページをOCRします。複数ページすべてを読みたい場合は `ocr_max_pages` を増やしてください。
 

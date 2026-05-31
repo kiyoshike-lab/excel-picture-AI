@@ -42,11 +42,18 @@ DEFAULT_CONFIG = {
     "auto_process_to_review": True,
     "ocr_min_chars": 8,
     "ocr_psm": "6",
-    "ocr_timeout_seconds": 8,
+    "ocr_timeout_seconds": 5,
     "ocr_preprocess": True,
-    "ocr_pdf_dpi": 140,
-    "ocr_target_long_side": 1100,
+    "ocr_pdf_dpi": 110,
+    "ocr_pdf_image_format": "jpeg",
+    "ocr_target_long_side": 900,
+    "ocr_min_long_side": 650,
     "ocr_max_pages": 1,
+    "ocr_retry_when_empty": True,
+    "pdf_text_max_pages": 3,
+    "xlsx_max_rows_per_sheet": 120,
+    "zip_max_files": 8,
+    "text_max_chars": 30000,
 }
 
 
@@ -281,7 +288,10 @@ def extract_fax(text):
 def read_pdf_text(file_bytes):
     reader = PdfReader(io.BytesIO(file_bytes))
     pages = []
+    max_pages = int(load_config().get("pdf_text_max_pages", 3))
     for index, page in enumerate(reader.pages, start=1):
+        if index > max_pages:
+            break
         text = page.extract_text() or ""
         if text.strip():
             pages.append(f"--- PDF {index}ページ ---\n{text.strip()}")
@@ -300,19 +310,23 @@ def read_scanned_pdf_text(file_bytes):
         pdf_path = temp / "input.pdf"
         image_base = temp / "page"
         pdf_path.write_bytes(file_bytes)
-        dpi = str(load_config().get("ocr_pdf_dpi", 180))
-        max_pages = str(load_config().get("ocr_max_pages", 2))
+        config = load_config()
+        dpi = str(config.get("ocr_pdf_dpi", 180))
+        max_pages = str(config.get("ocr_max_pages", 2))
+        image_format = str(config.get("ocr_pdf_image_format", "jpeg")).lower()
+        format_args = ["-jpeg", "-jpegopt", "quality=85"] if image_format in {"jpg", "jpeg"} else ["-png"]
         convert = subprocess.run(
-            [pdftoppm, "-png", "-r", dpi, "-f", "1", "-l", max_pages, str(pdf_path), str(image_base)],
+            [pdftoppm, *format_args, "-r", dpi, "-f", "1", "-l", max_pages, str(pdf_path), str(image_base)],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=max(8, int(config.get("ocr_timeout_seconds", 5)) * 2),
         )
         if convert.returncode != 0:
             return ""
 
         pages = []
-        for index, image_path in enumerate(sorted(temp.glob("page-*.png")), start=1):
+        page_images = sorted(path for path in temp.glob("page-*.*") if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".ppm"})
+        for index, image_path in enumerate(page_images, start=1):
             ocr_image = preprocess_image_file(image_path) if load_config().get("ocr_preprocess", True) else image_path
             page_text, _ = run_fast_ocr(tesseract, ocr_image, temp / f"ocr_{index}")
             if page_text:
@@ -367,6 +381,7 @@ def run_tesseract(tesseract, image_path, output_base, lang):
 def run_fast_ocr(tesseract, image_path, output_base):
     config = load_config()
     min_chars = int(config.get("ocr_min_chars", 12))
+    retry_when_empty = bool(config.get("ocr_retry_when_empty", True))
 
     # Keep production scans fast: one Japanese OCR pass first. Japanese traineddata also
     # handles many alphanumeric fields, so this avoids doing English + Japanese twice.
@@ -375,6 +390,8 @@ def run_fast_ocr(tesseract, image_path, output_base):
     write_history("ocr_attempt", {"lang": "jpn", "elapsed_ms": elapsed_ms, "chars": meaningful_text_length(text)})
     candidates.append((text, warning, "jpn"))
     if meaningful_text_length(text) >= min_chars:
+        return text, warning
+    if meaningful_text_length(text) > 0 or not retry_when_empty:
         return text, warning
 
     for lang in ["jpn+eng"]:
@@ -399,9 +416,15 @@ def preprocess_image_file(image_path):
         image = ImageOps.exif_transpose(image)
         image = image.convert("L")
         width, height = image.size
-        target = int(load_config().get("ocr_target_long_side", 1500))
-        if max(width, height) < target:
-            scale = target / max(width, height)
+        config = load_config()
+        target = int(config.get("ocr_target_long_side", 1500))
+        min_long_side = int(config.get("ocr_min_long_side", 0))
+        long_side = max(width, height)
+        should_resize_down = long_side > target
+        should_resize_up = min_long_side > 0 and long_side < min_long_side
+        if should_resize_down or should_resize_up:
+            resize_to = target if should_resize_down else min_long_side
+            scale = resize_to / long_side
             image = image.resize((int(width * scale), int(height * scale)), Image.Resampling.LANCZOS)
         image = ImageOps.autocontrast(image)
         image = ImageEnhance.Contrast(image).enhance(1.6)
@@ -477,9 +500,13 @@ def read_xlsx_text(file_bytes):
     try:
         workbook = load_workbook(temp_path, data_only=True, read_only=True)
         parts = []
+        max_rows = int(load_config().get("xlsx_max_rows_per_sheet", 120))
         for sheet in workbook.worksheets:
             parts.append(f"--- Excel sheet: {sheet.title} ---")
-            for row in sheet.iter_rows(values_only=True):
+            for index, row in enumerate(sheet.iter_rows(values_only=True), start=1):
+                if index > max_rows:
+                    parts.append(f"--- {sheet.title}: 先頭{max_rows}行まで読み込み ---")
+                    break
                 values = [str(value) for value in row if value not in (None, "")]
                 if values:
                     parts.append(" ".join(values))
@@ -521,10 +548,15 @@ def read_email_text(file_bytes):
 def read_archive_text(file_bytes):
     parts = []
     warnings = []
+    max_files = int(load_config().get("zip_max_files", 8))
     with zipfile.ZipFile(io.BytesIO(file_bytes)) as archive:
+        processed = 0
         for info in archive.infolist():
             if info.is_dir():
                 continue
+            if processed >= max_files:
+                warnings.append(f"ZIP内は先頭{max_files}ファイルまで読み込みました。")
+                break
             inner_name = info.filename
             inner_suffix = Path(inner_name).suffix.lower()
             if inner_suffix in ARCHIVE_EXTENSIONS:
@@ -536,6 +568,7 @@ def read_archive_text(file_bytes):
                 inner_text, warning = "", f"{inner_name}: 読み取りに失敗しました: {exc}"
             if inner_text:
                 parts.append(f"--- {inner_name} ---\n{inner_text}")
+                processed += 1
             if warning:
                 warnings.append(f"{inner_name}: {warning}")
     return "\n\n".join(parts).strip(), " / ".join(warnings)
@@ -564,7 +597,10 @@ def read_file_text(filename, file_bytes):
     if suffix in ARCHIVE_EXTENSIONS:
         return read_archive_text(file_bytes)
     if suffix in TEXT_EXTENSIONS:
-        return file_bytes.decode("utf-8-sig", errors="ignore").strip(), ""
+        max_chars = int(load_config().get("text_max_chars", 30000))
+        text = file_bytes.decode("utf-8-sig", errors="ignore").strip()
+        warning = "" if len(text) <= max_chars else f"テキストは先頭{max_chars}文字まで読み込みました。"
+        return text[:max_chars], warning
     return "", f"{suffix or '拡張子なし'} は未対応です。PDF、画像、Word、Excel、ZIP、テキストに変換してください。"
 
 
@@ -934,8 +970,15 @@ class Handler(BaseHTTPRequestHandler):
                 "ocr_timeout_seconds",
                 "ocr_preprocess",
                 "ocr_pdf_dpi",
+                "ocr_pdf_image_format",
                 "ocr_target_long_side",
+                "ocr_min_long_side",
                 "ocr_max_pages",
+                "ocr_retry_when_empty",
+                "pdf_text_max_pages",
+                "xlsx_max_rows_per_sheet",
+                "zip_max_files",
+                "text_max_chars",
             ]:
                 if key in data:
                     config[key] = data[key]

@@ -5,9 +5,16 @@
   "auto_process_to_review": true,
   "ocr_min_chars": 8,
   "ocr_psm": "6",
-  "ocr_timeout_seconds": 8,
+  "ocr_timeout_seconds": 5,
   "ocr_preprocess": true,
-  "ocr_pdf_dpi": 140,
-  "ocr_target_long_side": 1100,
-  "ocr_max_pages": 1
+  "ocr_pdf_dpi": 110,
+  "ocr_pdf_image_format": "jpeg",
+  "ocr_target_long_side": 900,
+  "ocr_min_long_side": 650,
+  "ocr_max_pages": 1,
+  "ocr_retry_when_empty": true,
+  "pdf_text_max_pages": 3,
+  "xlsx_max_rows_per_sheet": 120,
+  "zip_max_files": 8,
+  "text_max_chars": 30000
 }
