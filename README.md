@@ -82,12 +82,17 @@ OCRは常に自動最適化します。まず速い `eng` で読み取り、英�
 
 ```json
 {
-  "ocr_min_chars": 12,
+  "ocr_min_chars": 20,
   "ocr_psm": "6",
-  "ocr_timeout_seconds": 45,
-  "ocr_preprocess": true
+  "ocr_timeout_seconds": 10,
+  "ocr_preprocess": true,
+  "ocr_pdf_dpi": 150,
+  "ocr_target_long_side": 1200,
+  "ocr_max_pages": 2
 }
 ```
+
+1〜10秒を目標にするため、スキャンPDFは標準で先頭2ページだけを高速OCRします。複数ページすべてを読みたい場合は `ocr_max_pages` を増やしてください。
 
 ## 対応ファイル
 

@@ -40,10 +40,13 @@ DEFAULT_CONFIG = {
     "ledger_path": str(PC_EXCEL_DIR / "fax_ledger.xlsx"),
     "reviewer_default": "社員確認",
     "auto_process_to_review": True,
-    "ocr_min_chars": 12,
+    "ocr_min_chars": 20,
     "ocr_psm": "6",
-    "ocr_timeout_seconds": 45,
+    "ocr_timeout_seconds": 10,
     "ocr_preprocess": True,
+    "ocr_pdf_dpi": 150,
+    "ocr_target_long_side": 1200,
+    "ocr_max_pages": 2,
 }
 
 
@@ -297,7 +300,14 @@ def read_scanned_pdf_text(file_bytes):
         pdf_path = temp / "input.pdf"
         image_base = temp / "page"
         pdf_path.write_bytes(file_bytes)
-        convert = subprocess.run([pdftoppm, "-png", "-r", "220", str(pdf_path), str(image_base)], capture_output=True, text=True, timeout=90)
+        dpi = str(load_config().get("ocr_pdf_dpi", 180))
+        max_pages = str(load_config().get("ocr_max_pages", 2))
+        convert = subprocess.run(
+            [pdftoppm, "-png", "-r", dpi, "-f", "1", "-l", max_pages, str(pdf_path), str(image_base)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
         if convert.returncode != 0:
             return ""
 
@@ -334,6 +344,10 @@ def run_tesseract(tesseract, image_path, output_base, lang):
         "1",
         "--psm",
         str(config.get("ocr_psm", "6")),
+        "-c",
+        "load_system_dawg=0",
+        "-c",
+        "load_freq_dawg=0",
     ]
     started = datetime.now()
     result = subprocess.run(
@@ -362,6 +376,8 @@ def run_fast_ocr(tesseract, image_path, output_base):
     candidates.append((text, warning, "eng"))
     if english_signal_count(text) >= min_chars and japanese_char_count(text) == 0:
         return text, warning
+    if looks_like_complete_business_text(text):
+        return text, warning
 
     for lang in ["jpn", "jpn+eng"]:
         next_text, next_warning, next_elapsed_ms = run_tesseract(
@@ -385,8 +401,9 @@ def preprocess_image_file(image_path):
         image = ImageOps.exif_transpose(image)
         image = image.convert("L")
         width, height = image.size
-        if max(width, height) < 1800:
-            scale = 1800 / max(width, height)
+        target = int(load_config().get("ocr_target_long_side", 1500))
+        if max(width, height) < target:
+            scale = target / max(width, height)
             image = image.resize((int(width * scale), int(height * scale)), Image.Resampling.LANCZOS)
         image = ImageOps.autocontrast(image)
         image = ImageEnhance.Contrast(image).enhance(1.6)
@@ -398,6 +415,13 @@ def preprocess_image_file(image_path):
     except Exception as exc:
         write_history("image_preprocess_failed", {"path": str(image_path), "error": str(exc)})
         return image_path
+
+
+def looks_like_complete_business_text(text):
+    if not text:
+        return False
+    signals = ["FAX", "No", "ORDER", "DATE", "QTY", "TEL", "〒"]
+    return meaningful_text_length(text) >= 40 and sum(1 for signal in signals if signal.lower() in text.lower()) >= 2
 
 
 def read_image_text(file_bytes, suffix):
@@ -911,6 +935,9 @@ class Handler(BaseHTTPRequestHandler):
                 "ocr_psm",
                 "ocr_timeout_seconds",
                 "ocr_preprocess",
+                "ocr_pdf_dpi",
+                "ocr_target_long_side",
+                "ocr_max_pages",
             ]:
                 if key in data:
                     config[key] = data[key]
