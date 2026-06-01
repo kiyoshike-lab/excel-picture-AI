@@ -35,7 +35,7 @@ REJECTED = ROOT / "rejected_fax"
 PC_EXCEL_DIR = ROOT / "pc_excel"
 CONFIG_PATH = ROOT / "config.json"
 HISTORY_PATH = ROOT / "history.jsonl"
-APP_VERSION = "rapidocr-free-20260601-01"
+APP_VERSION = "rapidocr-balanced-20260601-01"
 RAPIDOCR_ENGINE = None
 
 DEFAULT_CONFIG = {
@@ -46,18 +46,18 @@ DEFAULT_CONFIG = {
     "ocr_engine": "rapidocr",
     "ocr_min_chars": 8,
     "ocr_psm": "6",
-    "ocr_timeout_seconds": 8,
+    "ocr_timeout_seconds": 6,
     "ocr_preprocess": True,
-    "ocr_preprocess_mode": "clean",
+    "ocr_preprocess_mode": "resize",
     "ocr_processed_format": "jpeg",
-    "ocr_jpeg_quality": 82,
-    "ocr_pdf_dpi": 140,
+    "ocr_jpeg_quality": 76,
+    "ocr_pdf_dpi": 120,
     "ocr_pdf_image_format": "jpeg",
-    "ocr_target_long_side": 1100,
-    "ocr_min_long_side": 800,
+    "ocr_target_long_side": 1000,
+    "ocr_min_long_side": 700,
     "ocr_max_pages": 1,
     "ocr_retry_when_empty": True,
-    "request_timeout_seconds": 19,
+    "request_timeout_seconds": 24,
     "max_upload_files": 1,
     "max_upload_bytes": 8000000,
     "max_single_file_bytes": 8000000,

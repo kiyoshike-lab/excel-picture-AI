@@ -35,9 +35,10 @@ const serverReadExtensions = [
   ".zip",
 ];
 const browserCompressExtensions = [".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"];
-const browserImageMaxSide = 1200;
-const browserImageQuality = 0.78;
-const uploadTimeoutMs = 25000;
+const browserImageMaxSide = 1100;
+const browserImageQuality = 0.72;
+const uploadTimeoutMs = 30000;
+const maxBrowserUploadBytes = 8000000;
 
 const sampleText = `資材発注書
 日付: 2026/05/29
@@ -451,6 +452,12 @@ document.querySelector("#fileInput").addEventListener("change", async (event) =>
     setStatus("ファイルを読み込んでいます...", "busy");
     const formData = new FormData();
     const uploadFiles = await Promise.all(files.map(compressImageBeforeUpload));
+    const uploadBytes = uploadFiles.reduce((total, file) => total + file.size, 0);
+    if (uploadBytes > maxBrowserUploadBytes) {
+      finishProgress("送信停止", "8MBを超えています。PDFは1ページ、画像は小さくして試してください", 100);
+      setStatus("8MBを超えるため送信を止めました。PDFは1ページ、画像は小さくして試してください。", "warning");
+      return;
+    }
     uploadFiles.forEach((file) => formData.append("file", file));
     updateProgress(18, "アップロード中", "サーバーへ送っています");
     let uploadResult;
