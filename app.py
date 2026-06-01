@@ -1,4 +1,4 @@
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+﻿from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 import cgi
@@ -35,13 +35,15 @@ REJECTED = ROOT / "rejected_fax"
 PC_EXCEL_DIR = ROOT / "pc_excel"
 CONFIG_PATH = ROOT / "config.json"
 HISTORY_PATH = ROOT / "history.jsonl"
-APP_VERSION = "20sec-accuracy-20260531-01"
+APP_VERSION = "rapidocr-free-20260601-01"
+RAPIDOCR_ENGINE = None
 
 DEFAULT_CONFIG = {
     "incoming_fax_dir": str(ROOT / "incoming_fax"),
     "ledger_path": str(PC_EXCEL_DIR / "fax_ledger.xlsx"),
     "reviewer_default": "社員確認",
     "auto_process_to_review": True,
+    "ocr_engine": "rapidocr",
     "ocr_min_chars": 8,
     "ocr_psm": "6",
     "ocr_timeout_seconds": 8,
@@ -315,8 +317,7 @@ def read_pdf_text(file_bytes):
 
 def read_scanned_pdf_text(file_bytes):
     pdftoppm = shutil.which("pdftoppm")
-    tesseract = shutil.which("tesseract")
-    if not pdftoppm or not tesseract:
+    if not pdftoppm:
         return ""
 
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -342,7 +343,7 @@ def read_scanned_pdf_text(file_bytes):
         page_images = sorted(path for path in temp.glob("page-*.*") if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".ppm"})
         for index, image_path in enumerate(page_images, start=1):
             ocr_image = preprocess_image_file(image_path) if load_config().get("ocr_preprocess", True) else image_path
-            page_text, _ = run_fast_ocr(tesseract, ocr_image, temp / f"ocr_{index}")
+            page_text, _ = run_image_ocr(ocr_image, temp / f"ocr_{index}")
             if page_text:
                 pages.append(f"--- OCR PDF {index}ページ ---\n{page_text}")
         return "\n\n".join(pages).strip()
@@ -358,6 +359,75 @@ def japanese_char_count(text):
 
 def english_signal_count(text):
     return len(re.findall(r"[A-Za-z0-9]", text or ""))
+
+
+def get_rapidocr_engine():
+    global RAPIDOCR_ENGINE
+    if RAPIDOCR_ENGINE is not None:
+        return RAPIDOCR_ENGINE
+    try:
+        from rapidocr import RapidOCR
+
+        RAPIDOCR_ENGINE = RapidOCR()
+        return RAPIDOCR_ENGINE
+    except Exception as exc:
+        write_history("rapidocr_unavailable", {"error": str(exc)})
+        return None
+
+
+def rapidocr_result_to_text(result):
+    if not result:
+        return ""
+    for attr in ["txts", "texts", "rec_texts"]:
+        values = getattr(result, attr, None)
+        if values:
+            return "\n".join(str(value).strip() for value in values if str(value).strip())
+    if hasattr(result, "to_markdown"):
+        try:
+            markdown = result.to_markdown()
+            if markdown:
+                return str(markdown).strip()
+        except Exception:
+            pass
+
+    strings = []
+
+    def collect(value):
+        if isinstance(value, str):
+            if value.strip() and not re.fullmatch(r"[\d.]+", value.strip()):
+                strings.append(value.strip())
+            return
+        if isinstance(value, dict):
+            for item in value.values():
+                collect(item)
+            return
+        if isinstance(value, (list, tuple)):
+            if len(value) >= 2 and isinstance(value[1], str):
+                collect(value[1])
+                return
+            for item in value:
+                collect(item)
+
+    if isinstance(result, tuple) and result:
+        collect(result[0])
+    else:
+        collect(result)
+    return "\n".join(strings)
+
+
+def run_rapid_ocr(image_path):
+    engine = get_rapidocr_engine()
+    if not engine:
+        return "", "RapidOCRが入っていないため、画像OCRを実行できません。"
+    started = datetime.now()
+    try:
+        result = engine(str(image_path))
+    except Exception as exc:
+        return "", f"RapidOCRに失敗しました: {exc}"
+    elapsed_ms = int((datetime.now() - started).total_seconds() * 1000)
+    text = rapidocr_result_to_text(result)
+    write_history("ocr_attempt", {"engine": "rapidocr", "elapsed_ms": elapsed_ms, "chars": meaningful_text_length(text)})
+    return text.strip(), ""
 
 
 def run_tesseract(tesseract, image_path, output_base, lang):
@@ -428,6 +498,19 @@ def run_fast_ocr(tesseract, image_path, output_base):
     return best_text, best_warning
 
 
+def run_image_ocr(image_path, output_base):
+    config = load_config()
+    engine = str(config.get("ocr_engine", "rapidocr")).lower()
+    if engine == "rapidocr":
+        text, warning = run_rapid_ocr(image_path)
+        if text or not shutil.which("tesseract"):
+            return text, warning
+
+    tesseract = shutil.which("tesseract")
+    if not tesseract:
+        return "", "RapidOCRまたはTesseract OCRが必要です。"
+    return run_fast_ocr(tesseract, image_path, output_base)
+
 def preprocess_image_file(image_path):
     try:
         image = Image.open(image_path)
@@ -472,10 +555,7 @@ def looks_like_complete_business_text(text):
 
 def read_image_text(file_bytes, suffix):
     if suffix in {".heic", ".heif"}:
-        return "", "HEIC/HEIFはこの環境では未対応です。iPhone側で「互換性優先」にするか、JPG/PNGに変換してアップロードしてください。"
-    tesseract = shutil.which("tesseract")
-    if not tesseract:
-        return "", "写真・画像OCRにはTesseract OCRの追加が必要です。RenderのDocker構成では自動で入ります。"
+        return "", "HEIC/HEIFは未対応です。JPG/PNGに変換してアップロードしてください。"
 
     with tempfile.TemporaryDirectory() as temp_dir:
         temp = Path(temp_dir)
@@ -483,11 +563,10 @@ def read_image_text(file_bytes, suffix):
         output_base = temp / "ocr"
         image_path.write_bytes(file_bytes)
         ocr_image = preprocess_image_file(image_path) if load_config().get("ocr_preprocess", True) else image_path
-        text, warning = run_fast_ocr(tesseract, ocr_image, output_base)
+        text, warning = run_image_ocr(ocr_image, output_base)
         if warning and not text:
             return "", f"OCRに失敗しました: {warning}"
         return text.strip(), "" if text.strip() else "画像から文字を読み取れませんでした。写真の明るさや傾きを確認してください。"
-
 
 class TextOnlyHTMLParser(HTMLParser):
     def __init__(self):
@@ -1047,6 +1126,7 @@ class Handler(BaseHTTPRequestHandler):
                 "incoming_fax_dir",
                 "ledger_path",
                 "reviewer_default",
+                "ocr_engine",
                 "ocr_min_chars",
                 "ocr_psm",
                 "ocr_timeout_seconds",
@@ -1152,3 +1232,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -3,6 +3,7 @@
   "ledger_path": "C:\\Users\\Public\\Documents\\発注台帳.xlsx",
   "reviewer_default": "社員確認",
   "auto_process_to_review": true,
+  "ocr_engine": "rapidocr",
   "ocr_min_chars": 8,
   "ocr_psm": "6",
   "ocr_timeout_seconds": 8,

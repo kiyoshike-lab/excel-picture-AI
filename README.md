@@ -74,6 +74,8 @@ python app.py 8765
 
 ## 写真OCR、スキャンPDF OCR
 
+標準OCRはTesseractではなく、無料で使える RapidOCR + ONNXRuntime です。Renderでは `requirements.txt` から自動で入ります。
+
 写真やスキャンPDFを読むにはTesseract OCRが必要です。Render用のDocker構成では自動で入ります。会社PCで本番運用する場合は、そのPCにもTesseract OCRを入れてください。
 
 OCRは常に自動最適化します。まず速い `eng` で読み取り、英数字だけで十分読めた場合はそこで止めます。日本語が必要そうな場合だけ `jpn`、最後に `jpn+eng` を試します。画像の白黒化、拡大、コントラスト補正も標準で行います。
@@ -82,6 +84,7 @@ OCRは常に自動最適化します。まず速い `eng` で読み取り、英�
 
 ```json
 {
+  "ocr_engine": "rapidocr",
   "ocr_min_chars": 8,
   "ocr_psm": "6",
   "ocr_timeout_seconds": 8,
